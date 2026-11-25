@@ -1,22 +1,62 @@
-# Five-minute demonstration
+# OMNIS-X demo walkthrough
 
-Use a fresh demo database. The first seeded day defaults to the date the database was initialized. The five-day timetable stays anchored to that date when you reopen the application.
+Use a fresh SQLite database for a repeatable demo. The IIET fixture models the CSE Semester V timetable for Sections A–F and includes a fictional ECE department for demonstrating access scope.
 
-1. Select **Faculty** on the login screen. Mira Shah has two sessions on the first demo day. Click **Report absence**, keep **Full day** selected and submit. The result shows two affected sessions and 60 students across two fictional cohorts.
-2. Sign out through the account menu. Select **HOD**. The incident center shows the CSE absence and the department's recovery alternatives. Recommend an alternative. Departmental approval is disabled by default.
-3. Select **Admin** and open **Recovery studio**. Choose **Mira Shah absence**. Check the ranked alternatives and open **View details** to inspect the original and proposed faculty, room and time. Approve the first alternative and confirm publication.
-4. Select **Student**. Open **Timetable** for the revised Algorithms assignment and **Notifications** for the old and new details. Return as Faculty to see Mira's updated schedule. Concurrent open workspaces refresh every five seconds. Separate browser profiles allow different roles to stay signed in.
-5. Select **Operator**, open **Scenario lab**, choose **Building power failure** and run impact analysis. Inspect the graph and dependency depths. Compare plans, then return to the official timetable to check the publication version.
-6. Choose **No backup laboratory** to take both compatible CSE labs offline during the protected exam. Inspect the blocking resources and unresolved session. **Multiple failures** exercises simultaneous faculty and infrastructure disruption.
+## Start with a fresh week
 
-## Additional demonstrations
+From the project directory in PowerShell, run the commands below. The seed date anchors the first week to Monday, November 23, 2026.
 
-- **Manual planning** in Settings records the outage and waits for a reviewer to generate alternatives. **Assisted** generates immediately. **Automatic** may publish complete room-only recoveries with zero delay and a penalty within the administrator's limit.
-- **Consent** in Settings requires substitutes to accept before an official plan can be applied. Use **Request / check consent** in Recovery Studio. For a live demonstration, add a Faculty account linked to the proposed lecturer in Settings, sign in as that lecturer, then open **Substitute requests**.
-- **Stale proposals** can be demonstrated by creating an incident, generating alternatives, then changing a policy weight. Regenerate the earlier case before approval.
-- **Administration** supports adding departments, buildings, classrooms, laboratories, faculty, cohorts and accounts. Editing capacity or faculty availability that would invalidate an existing published session returns a conflict.
+```powershell
+$demoFile = Join-Path (Get-Location) ('backend\demo-walkthrough-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.db')
+$env:DATABASE_URL = 'sqlite:///' + ($demoFile -replace '\\','/')
+$env:OMNIS_DEMO = '1'
+$env:OMNIS_DEMO_DATASET = 'iiet'
+$env:OMNIS_DEMO_DATE = '2026-11-25'
+.\scripts\start_windows.bat
+```
 
-## Repeat with a fresh campus
+Open [OMNIS-X](http://127.0.0.1:8000) once FastAPI is listening. Use **Demo week** in Timetable or **Demo Monday** on a dashboard to return to the seed week.
 
-Choose a new SQLite file with DATABASE_URL before starting the server. An empty database initializes automatically. Keep the previous file to retain its decisions and audit history.
+## Compare access portals
+
+1. Open **Student** under **OMNIS-X Access** and select **Batch B1 demo**. Open **Timetable → Demo week**.
+2. Sign out and repeat with **Batch B2 demo**. Both accounts see the common Section B classes. Their 08:00 laboratory assignments differ by batch.
+
+   | Batch | Monday | Friday |
+   | --- | --- | --- |
+   | B1 | Web Technology Lab | Computer Networks Lab |
+   | B2 | Computer Networks Lab | Web Technology Lab |
+
+3. Sign in with the **Faculty** demo. On the Timetable page, **My teaching** shows the instructor's assignments and **Campus timetable** shows read-only published bookings.
+4. Use **Admin → Timetable → Demo week** to view both batches and other sections. Open the Section B Monday ATC card to see course code `BCSPCC501`, Room A126 and the demo teaching assignment.
+
+The timetable has Day, Week and List views. Week runs Monday through Sunday. Dates without published records show an empty timetable.
+
+## Explore the Digital twin
+
+1. As **Admin**, **HOD** or **Operator**, open [Digital twin](http://127.0.0.1:8000/twin). In **Resources**, search for `Room A126`, select the room and choose a date with sessions.
+2. Select a session to follow its instructor, room and cohort relationships. Use **Graph** beside **Resources** for the dependency map, zoom controls and optional connection labels. The two views share filters and selection.
+3. Open **Scenario lab** and set the date to the demo Monday. Choose **Laboratory outage**, set 08:00–10:00 and run impact analysis. Compare the original lab assignment with the proposed recovery.
+4. Try **No backup laboratory** for the same interval and compare coverage. Scenario Lab labels these cases as hypothetical.
+
+## Publish a recovery in the demo
+
+1. Sign in with the **Faculty** demo for Dr. Vikram Nair. Choose **Report absence**, select the demo Monday and set 10:30–11:30. The interval overlaps Section B's ATC session.
+2. As **Admin**, open **Recovery studio** and choose the report. Compare the before and after assignments and their impact. The demo includes Dr. Vivek Sharma as a qualified ATC substitute when available.
+3. Approve a valid plan and confirm publication. Under a consent policy, first request and collect the proposed substitute's consent. Publication advances the timetable version and notifies the affected signed-in roles through their inboxes.
+4. Open either Section B demo student account. Check the updated assignment and the notice under **Notifications**.
+
+On a staff **Overview**, change the date and choose **Inspect** under **Resilience overview**. Analytics opens on the selected date with its individual factors. See the [score definitions](architecture.md#date-scoped-resilience).
+
+## Find the imported data in Supabase
+
+The default Tables page opens the `public` schema. Use the direct link to open the authorized project's private schema. [OMNIS-X tables in omnisx](https://supabase.com/dashboard/project/wwzockububqslawmsrkv/database/tables?schema=omnisx).
+
+| Entry | Contents |
+| --- | --- |
+| `student_roster` | 399 students in 12 batches. Includes names, institutional IDs, sections, batches and source pages. |
+| `timetable_reference_pages` | Six weekly source grids with rooms and 54 listed course assignments. |
+| `student_timetable` | A roster view of published section and batch sessions. |
+
+The source timetable names Bapuji Institute of Engineering & Technology. The running demo uses IIET identities and modeled rooms, backups, capacities and faculty availability. The private roster and the demo account directory are separate. Individual PEC and AEC allocations still need readable copies of the separate update PDFs.
 

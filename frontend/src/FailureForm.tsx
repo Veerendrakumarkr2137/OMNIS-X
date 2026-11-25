@@ -11,7 +11,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api, errorText } from "./api";
-import { fromTime, type Campus, type Incident } from "./types";
+import { fromTime, selectedDay, type Campus, type Incident } from "./types";
+import { useSearchParams } from "react-router-dom";
 import { Modal } from "./ui";
 const presets = [
   { name: "Faculty absence", roots: ["f00"], icon: BookOpen },
@@ -32,6 +33,7 @@ export function FailureForm({
   done: (x: Incident) => void;
   close?: () => void;
 }) {
+  const [params] = useSearchParams();
   const absence = kind === "absence",
     sim = kind === "simulation",
     options = c.resources.filter(
@@ -44,7 +46,18 @@ export function FailureForm({
             Boolean,
           ),
     ),
-    [day, setDay] = useState(c.dash.anchor),
+    [day, setDay] = useState(
+      selectedDay(
+        params.get("day"),
+        sim && c.dash.demo ? c.dash.anchor : c.dash.today,
+      ),
+    ),
+    [endDay, setEndDay] = useState(
+      selectedDay(
+        params.get("day"),
+        sim && c.dash.demo ? c.dash.anchor : c.dash.today,
+      ),
+    ),
     [start, setStart] = useState("08:00"),
     [end, setEnd] = useState("18:00"),
     [all, setAll] = useState(true),
@@ -59,10 +72,15 @@ export function FailureForm({
     setError("");
     const interval = {
       day,
+      ...(absence ? { end_day: endDay } : {}),
       start: all ? 0 : fromTime(start),
       end: all ? 1440 : fromTime(end),
       reason,
     };
+    if (absence && endDay < day) {
+      setError("Choose a To date on or after the From date.");
+      return;
+    }
     if (interval.end <= interval.start) {
       setError("Choose an end time after the start time.");
       return;
@@ -159,15 +177,29 @@ export function FailureForm({
         )}
         <div className="form-grid">
           <label>
-            Date
+            {absence ? "From date" : "Date"}
             <input
               type="date"
               required
               value={day}
-              onChange={(e) => setDay(e.target.value)}
+              onChange={(e) => {
+                setDay(e.target.value);
+                if (endDay < e.target.value) setEndDay(e.target.value);
+              }}
             />
           </label>
-          {!absence && (
+          {absence ? (
+            <label>
+              To date
+              <input
+                type="date"
+                required
+                min={day}
+                value={endDay}
+                onChange={(e) => setEndDay(e.target.value)}
+              />
+            </label>
+          ) : (
             <label>
               Severity
               <select

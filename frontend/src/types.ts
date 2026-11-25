@@ -4,6 +4,17 @@ export type User = {
   role: "Admin" | "HOD" | "Faculty" | "Student" | "Operator";
   dept: string | null;
   resource: string | null;
+  department_id?: string | null;
+  email?: string | null;
+  active?: boolean;
+  profile?: {
+    designation?: string;
+    semester?: string;
+    section?: string;
+    batch?: string;
+    has_registrations?: boolean;
+  };
+  enrollments?: Record<string, string>;
 };
 export type Resource = {
   id: string;
@@ -19,9 +30,18 @@ export type Resource = {
     limit?: number;
     consecutive?: number;
     available?: number[];
+    semester?: string;
+    section?: string;
+    batch?: string;
+    members?: string[];
   };
 };
-export type Slot = { start: number; faculty: string; room: string };
+export type Slot = {
+  start: number;
+  faculty: string;
+  room: string;
+  day?: string;
+};
 export type Lesson = Slot & {
   id: string;
   day: string;
@@ -41,6 +61,7 @@ export type Impact = {
   cohorts: string[];
   depths: Record<string, number>;
   minutes: number;
+  end_day?: string;
 };
 export type Incident = {
   id: number;
@@ -58,6 +79,7 @@ export type Incident = {
 };
 export type Change = {
   id: string;
+  day?: string;
   subject: string;
   cohort: string;
   before: Slot;
@@ -93,22 +115,47 @@ export type Notice = {
   route: string;
   created: string;
   seen: boolean;
+  category?: string;
 };
 export type Dashboard = {
   anchor: string;
+  today: string;
+  demo: boolean;
+  campus_name?: string | null;
+  demo_profile?: {
+    campus_name: string;
+    demo_label: string;
+    source_label: string;
+    breaks: string;
+    courses: Record<string, { abbr: string; code: string; faculty: string[] }>;
+  } | null;
+  assignment_names: Record<string, string>;
+  disrupted_sessions: string[];
+  outage_resources?: Record<string, string[]>;
   version: number;
   revision: number;
   mode: string;
   hod_approval: boolean;
   require_consent?: boolean;
+  allow_substitution?: boolean;
+  teaching_profile?: { subjects: string[]; available: number[]; limit: number };
+  department_summary?: { students: number; pending_leave: number };
   score?: number;
   risks?: { title: string; detail: string; severity: string }[];
   factors?: Record<string, number | null>;
+};
+export type DailyResilience = {
+  day: string;
+  sessions: number;
+  score: number | null;
+  factors: Record<string, number | null>;
+  risks: { title: string; detail: string; severity: string }[];
 };
 export type Policy = {
   mode: string;
   hod_approval: boolean;
   require_consent?: boolean;
+  allow_substitution?: boolean;
   delay_weight: number;
   room_weight: number;
   faculty_weight: number;
@@ -148,5 +195,18 @@ export const pretty = (s: string) =>
   });
 export const fromTime = (s: string) =>
   Number(s.slice(0, 2)) * 60 + Number(s.slice(3));
+export function shiftDay(day: string, amount: number) {
+  const date = new Date(day + "T12:00:00Z");
+  date.setUTCDate(date.getUTCDate() + amount);
+  return date.toISOString().slice(0, 10);
+}
+export function selectedDay(value: string | null, fallback: string) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return fallback;
+  const date = new Date(value + "T12:00:00Z");
+  return Number.isFinite(date.getTime()) &&
+    date.toISOString().slice(0, 10) === value
+    ? value
+    : fallback;
+}
 export const privileged = (u: User) =>
   ["Admin", "HOD", "Operator"].includes(u.role);

@@ -23,6 +23,20 @@ def overlaps(start, end, other_start, other_end):
     return start < other_end and other_start < end
 
 
+def cohort_members(cohort, resources):
+    """Represent cohorts as disjoint teaching batches for scheduling and attendance."""
+    return set(resources[cohort]["details"].get("members", [cohort]))
+
+
+def unique_students(cohorts, resources):
+    batches = set().union(*(cohort_members(cohort, resources) for cohort in cohorts))
+    return sum(resources[batch]["details"]["size"] for batch in batches)
+
+
+def cohort_size(cohort, resources):
+    return unique_students([cohort], resources)
+
+
 def analyze(g, resources, lessons, roots, start, end):
     depths = propagation(g, roots)
     affected = [
@@ -37,10 +51,8 @@ def analyze(g, resources, lessons, roots, start, end):
         "depths": depths,
         "sessions": [s["id"] for s in affected],
         "cohorts": cohorts,
-        "students": sum(resources[c]["details"]["size"] for c in cohorts),
-        "student_sessions": sum(
-            resources[s["cohort"]]["details"]["size"] for s in affected
-        ),
+        "students": unique_students(cohorts, resources),
+        "student_sessions": sum(cohort_size(s["cohort"], resources) for s in affected),
         "departments": sorted(
             {s["dept"] for s in affected}
             | {resources[r]["dept"] for r in roots if resources[r]["dept"]}

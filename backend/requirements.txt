@@ -1,6 +1,8 @@
 fastapi>=0.121,<1
 uvicorn>=0.38,<1
 sqlalchemy>=2.0.45,<3
+psycopg[binary]>=3.3,<4
+python-dotenv>=1.2,<2
 argon2-cffi>=25.1,<26
 networkx>=3.5,<4
 ortools>=9.14,<10

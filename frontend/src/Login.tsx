@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import { useForm } from "react-hook-form";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -25,9 +26,21 @@ const demoRoles = [
   ["Student", GraduationCap],
   ["Operator", Wrench],
 ] as const;
+const accessLabels: Record<User["role"], string> = {
+  Admin: "Administrator",
+  HOD: "Department head",
+  Faculty: "Faculty",
+  Student: "Student",
+  Operator: "Operations",
+};
+
 export function Login({ onLogin }: { onLogin: (u: User) => void }) {
   const reduced = useReducedMotion();
-  const [demo, setDemo] = useState(false),
+  const [params] = useSearchParams();
+  const selectedPortal = demoRoles.find(
+    ([role]) => role.toLowerCase() === params.get("access"),
+  )?.[0];
+  const [config, setConfig] = useState({ demo: false, batch_demo: false }),
     [shown, setShown] = useState(false),
     [loading, setLoading] = useState(""),
     [error, setError] = useState("");
@@ -37,11 +50,16 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
     remember: boolean;
   }>();
   useEffect(() => {
-    get<{ demo: boolean }>("/config")
-      .then((x) => setDemo(x.demo))
+    get<typeof config>("/config")
+      .then(setConfig)
       .catch((e) => setError(errorText(e)));
   }, []);
-  async function enter(username: string, password: string, remember = false) {
+  async function enter(
+    username: string,
+    password: string,
+    remember = false,
+    portal = selectedPortal,
+  ) {
     if (loading) return;
     const check = z
       .object({
@@ -50,15 +68,21 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
       })
       .safeParse({ username, password });
     if (!check.success) {
-      setError("Enter your username and password.");
+      setError("Enter your login ID or institutional email and password.");
       return;
     }
     setError("");
     setLoading(username);
     try {
       onLogin(
-        (await api.post<User>("/auth/login", { username, password, remember }))
-          .data,
+        (
+          await api.post<User>("/auth/login", {
+            username,
+            password,
+            remember,
+            portal,
+          })
+        ).data,
       );
     } catch (e) {
       setError(errorText(e));
@@ -102,19 +126,35 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
           <div className="login-symbol">
             <LockKeyhole size={23} />
           </div>
-          <div className="eyebrow">OPERATIONS WORKSPACE</div>
-          <h2>Welcome back.</h2>
-          <p>Sign in to your institutional workspace.</p>
+          <div className="eyebrow">OMNIS-X ACCESS</div>
+          <h2>
+            {selectedPortal
+              ? accessLabels[selectedPortal] + " sign-in"
+              : "Welcome back."}
+          </h2>
+          <p>Sign in with your institutional account.</p>
+          <nav className="access-portals" aria-label="Access portals">
+            {demoRoles.map(([role, Icon]) => (
+              <Link
+                key={role}
+                to={"/?access=" + role.toLowerCase()}
+                aria-current={selectedPortal === role ? "page" : undefined}
+              >
+                <Icon size={15} aria-hidden="true" />
+                {accessLabels[role]}
+              </Link>
+            ))}
+          </nav>
           <form
             onSubmit={handleSubmit((x) =>
               enter(x.username, x.password, x.remember),
             )}
           >
             <label>
-              Username
+              Login ID or institutional email
               <input
                 autoComplete="username"
-                placeholder="Enter your username"
+                placeholder="Faculty ID, USN, username or email"
                 required
                 {...register("username")}
               />
@@ -152,30 +192,50 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
               <ArrowRight size={16} />
             </button>
           </form>
-          {demo && (
+          {config.demo && (
             <div className="demo-area">
               <div className="demo-title">
                 <span>DEMO ACCESS</span>
                 <div />
               </div>
-              <p>Explore the fictional campus as a guest role.</p>
+              <p>
+                {selectedPortal === "Student" && config.batch_demo
+                  ? "Try the Section B timetable for either batch."
+                  : "Explore the demonstration timetable as a guest."}
+              </p>
               <div className="demo-grid">
-                {demoRoles.map(([r, I]) => (
+                {demoRoles
+                  .filter(([r]) => !selectedPortal || r === selectedPortal)
+                  .map(([r, I]) => (
+                    <button
+                      key={r}
+                      disabled={!!loading}
+                      onClick={() =>
+                        enter(
+                          r.toLowerCase(),
+                          r[0] + r.toLowerCase().slice(1) + "@123",
+                          false,
+                          r,
+                        )
+                      }
+                    >
+                      <I size={16} />
+                      {selectedPortal === "Student" && config.batch_demo
+                        ? "Batch B1 demo"
+                        : r}
+                      <ArrowUpRight size={12} />
+                    </button>
+                  ))}
+                {selectedPortal === "Student" && config.batch_demo && (
                   <button
-                    key={r}
                     disabled={!!loading}
-                    onClick={() =>
-                      enter(
-                        r.toLowerCase(),
-                        r[0] + r.toLowerCase().slice(1) + "@123",
-                      )
-                    }
+                    onClick={() => enter("student-b2", "DemoB2-Student!26")}
                   >
-                    <I size={16} />
-                    {r}
+                    <GraduationCap size={16} />
+                    Batch B2 demo
                     <ArrowUpRight size={12} />
                   </button>
-                ))}
+                )}
               </div>
             </div>
           )}

@@ -18,12 +18,17 @@ import {
 import { toast } from "sonner";
 import { api, errorText, get } from "./api";
 import { Empty, Modal, Pill } from "./ui";
-import { Accounts, ResourceEditor } from "./Directory";
+import { ResourceEditor } from "./Directory";
+import { Accounts } from "./AccountDirectory";
 import { FailureForm } from "./FailureForm";
 import { SimulationResults } from "./Recovery";
 import { Twin } from "./Twin";
+import { useResilience } from "./useResilience";
 import {
+  fromTime,
   pretty,
+  selectedDay,
+  shiftDay as shift,
   time,
   type Audit,
   type Campus,
@@ -69,39 +74,127 @@ function SearchBox({
     </label>
   );
 }
-const shift = (s: string, n: number) => {
-  const d = new Date(s + "T12:00:00Z");
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-};
 export function Timetable({ c }: { c: Campus }) {
   const [params] = useSearchParams();
-  const linked = params.get("day") || "";
-  const [view, setView] = useState("Day"),
-    [date, setDate] = useState(
-      c.lessons.some((s) => s.day === linked) ? linked : c.dash.anchor,
+  const [publishing, setPublishing] = useState(false);
+  const [campusView, setCampusView] = useState(false);
+  const [view, setView] = useState(
+      params.get("view") === "week" ? "Week" : "Day",
     ),
+    [date, setDate] = useState(selectedDay(params.get("day"), c.dash.today)),
     [search, setSearch] = useState(""),
-    [kind, setKind] = useState(""),
+    [kind, setKind] = useState(params.get("kind") || ""),
+    [department, setDepartment] = useState(""),
     [scope, setScope] = useState(""),
-    [selected, setSelected] = useState<Lesson | null>(null);
-  const filtered = c.lessons.filter(
+    [selectedId, setSelected] = useState(params.get("session"));
+  const profile = c.dash.demo_profile;
+  const { role, name, dept, profile: person, resource } = c.user;
+  const viewingCampus = role === "Faculty" && campusView;
+  const shared = useQuery({
+    queryKey: ["shared-timetable", c.user.id],
+    queryFn: () =>
+      get<{
+        sessions: Lesson[];
+        assignment_names: Record<string, string>;
+        disrupted_sessions: string[];
+      }>("/timetable/shared"),
+    enabled: viewingCampus,
+    refetchInterval: 5000,
+  });
+  const schedule = viewingCampus ? (shared.data?.sessions ?? []) : c.lessons;
+  const label = (id: string) =>
+    viewingCampus
+      ? (shared.data?.assignment_names[id] ?? c.name(id))
+      : c.name(id);
+  const selected = schedule.find((s) => s.id === selectedId);
+  const personal = role === "Student" || (role === "Faculty" && !viewingCampus);
+  const timetableTitle = {
+    Admin: "Institution timetable",
+    HOD: "Department timetable",
+    Faculty: viewingCampus ? "Campus timetable" : "My teaching timetable",
+    Student: "My class timetable",
+    Operator: "Campus room timetable",
+  }[role];
+  const timetableContext =
+    role === "Student"
+      ? [
+          name,
+          dept,
+          person?.semester && "Semester " + person.semester,
+          person?.section && "Section " + person.section,
+          person?.batch && "Batch " + person.batch,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : role === "Faculty"
+        ? viewingCampus
+          ? "Read-only published sessions across departments"
+          : [name, dept].filter(Boolean).join(" · ")
+        : role === "HOD"
+          ? dept
+          : role === "Operator"
+            ? "Published bookings across campus"
+            : "Published sessions across departments";
+  const departments = [...new Set(schedule.map((s) => s.dept))].sort();
+  const assignmentIds = new Set(
+    schedule
+      .filter((s) => !department || s.dept === department)
+      .flatMap((s) =>
+        role === "Operator" ? [s.room] : [s.cohort, s.faculty, s.room],
+      ),
+  );
+  const assignmentOptions = [...assignmentIds]
+    .filter((id) => !personal || id !== resource)
+    .map((id) => ({ id, name: label(id) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const course = selected ? profile?.courses[selected.subject] : undefined;
+  const affected = new Set(
+    viewingCampus ? shared.data?.disrupted_sessions : c.dash.disrupted_sessions,
+  );
+  const weekday = new Date(date + "T12:00:00Z").getUTCDay();
+  const from = view === "Week" ? shift(date, -((weekday + 6) % 7)) : date;
+  const until = shift(from, view === "Week" ? 7 : 1);
+  const filtered = schedule.filter(
     (s) =>
-      (view === "List" ||
-        (s.day >= date && s.day < shift(date, view === "Week" ? 7 : 1))) &&
+      (view === "List" || (s.day >= from && s.day < until)) &&
       (!kind || s.kind === kind) &&
-      (!scope || [s.dept, s.faculty, s.room, s.cohort].includes(scope)) &&
-      [s.subject, c.name(s.faculty), c.name(s.room), c.name(s.cohort)]
+      (!department || s.dept === department) &&
+      (!scope || [s.faculty, s.room, s.cohort].includes(scope)) &&
+      [s.subject, label(s.faculty), label(s.room), label(s.cohort)]
         .join(" ")
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
   return (
     <>
-      <Intro tag="ACADEMIC OPERATIONS" title="Timetable">
-        Published academic sessions and approved schedule changes.
+      <Intro tag={role + " access"} title={timetableTitle}>
+        {timetableContext}
       </Intro>
       <section className="panel">
+        {profile && <p className="meta">{profile.breaks}</p>}
+        {role === "Faculty" && (
+          <div
+            className="segmented timetable-scope"
+            role="group"
+            aria-label="Faculty timetable access"
+          >
+            {[false, true].map((campus) => (
+              <button
+                key={String(campus)}
+                aria-pressed={campus === campusView}
+                className={campus === campusView ? "active" : ""}
+                onClick={() => {
+                  setCampusView(campus);
+                  setScope("");
+                  setDepartment("");
+                  setSelected(null);
+                }}
+              >
+                {campus ? "Campus timetable" : "My teaching"}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="panel-head">
           <div className="segmented">
             {["Day", "Week", "List"].map((v) => (
@@ -115,7 +208,28 @@ export function Timetable({ c }: { c: Campus }) {
               </button>
             ))}
           </div>
-          <Pill>Published v{c.dash.version}</Pill>
+          <div className="actions">
+            {c.user.role === "Admin" && (
+              <button className="primary" onClick={() => setPublishing(true)}>
+                Add session
+              </button>
+            )}
+            {profile && (
+              <button
+                className="secondary"
+                onClick={() => {
+                  setDate(c.dash.anchor);
+                  setView("Week");
+                }}
+              >
+                Demo week
+              </button>
+            )}
+            <Pill>Published v{c.dash.version}</Pill>
+            <Pill tone="neutral">
+              {filtered.length} {filtered.length === 1 ? "session" : "sessions"}
+            </Pill>
+          </div>
         </div>
         <div className="filters">
           <SearchBox label="Search timetable" value={search} set={setSearch} />
@@ -129,27 +243,39 @@ export function Timetable({ c }: { c: Campus }) {
               <option key={x}>{x}</option>
             ))}
           </select>
-          <select
-            aria-label="Timetable filter"
-            value={scope}
-            onChange={(e) => setScope(e.target.value)}
-          >
-            <option value="">All assignments</option>
-            {[...new Set(c.lessons.map((s) => s.dept))].map((d) => (
-              <option key={d}>{d}</option>
-            ))}
-            {c.resources
-              .filter((r) =>
-                ["Faculty", "Cohort", "Classroom", "Laboratory"].includes(
-                  r.kind,
-                ),
-              )
-              .map((r) => (
+          {!personal && departments.length > 1 && (
+            <select
+              aria-label="Timetable department"
+              value={department}
+              onChange={(e) => {
+                setDepartment(e.target.value);
+                setScope("");
+              }}
+            >
+              <option value="">All departments</option>
+              {departments.map((d) => (
+                <option key={d}>{d}</option>
+              ))}
+            </select>
+          )}
+          {assignmentOptions.length > 1 && (
+            <select
+              aria-label={
+                role === "Operator" ? "Timetable room" : "Timetable filter"
+              }
+              value={scope}
+              onChange={(e) => setScope(e.target.value)}
+            >
+              <option value="">
+                {role === "Operator" ? "All booked rooms" : "All assignments"}
+              </option>
+              {assignmentOptions.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}
                 </option>
               ))}
-          </select>
+            </select>
+          )}
         </div>
         {view !== "List" && (
           <div className="datebar">
@@ -179,7 +305,7 @@ export function Timetable({ c }: { c: Campus }) {
         )}
         {view === "Week" && (
           <div className="weekgrid">
-            {Array.from({ length: 7 }, (_, i) => shift(date, i)).map((day) => (
+            {Array.from({ length: 7 }, (_, i) => shift(from, i)).map((day) => (
               <div key={day}>
                 <div className="dayheading">{pretty(day)}</div>
                 {filtered
@@ -187,20 +313,29 @@ export function Timetable({ c }: { c: Campus }) {
                   .map((s) => (
                     <button
                       className="week-session"
-                      onClick={() => setSelected(s)}
+                      onClick={() => setSelected(s.id)}
                       key={s.id}
                     >
                       <small>
                         {time(s.start)} – {time(s.start + s.duration)}
                       </small>
-                      <b>{s.subject}</b>
+                      <b title={s.subject}>
+                        {profile?.courses[s.subject]?.abbr ?? s.subject}
+                      </b>
                       <small>
-                        {c.name(s.room)} · {c.name(s.faculty)}
+                        {label(s.room)} · {label(s.faculty)}
                       </small>
-                      <small>{s.status}</small>
+                      <small>{label(s.cohort)}</small>
+                      <small>{affected.has(s.id) ? "At risk" : s.status}</small>
                     </button>
                   ))}
-                {!filtered.some((s) => s.day === day) && <small>Free</small>}
+                {!filtered.some((s) => s.day === day) && (
+                  <small>
+                    {schedule.some((s) => s.day === day)
+                      ? "No matching sessions"
+                      : "No sessions scheduled"}
+                  </small>
+                )}
               </div>
             ))}
           </div>
@@ -215,7 +350,7 @@ export function Timetable({ c }: { c: Campus }) {
                   <button
                     className="row linkrow"
                     key={s.id}
-                    onClick={() => setSelected(s)}
+                    onClick={() => setSelected(s.id)}
                   >
                     <span className="time-chip">
                       {time(s.start)}
@@ -224,20 +359,42 @@ export function Timetable({ c }: { c: Campus }) {
                     <span className="grow">
                       <b>{s.subject}</b>
                       <small>
-                        {c.name(s.faculty)} · {c.name(s.room)} ·{" "}
-                        {c.name(s.cohort)}
+                        {label(s.faculty)} · {label(s.room)} · {label(s.cohort)}
                       </small>
                     </span>
-                    <Pill tone={s.previous ? "purple" : "neutral"}>
-                      {s.previous ? s.status : s.kind}
+                    <Pill
+                      tone={
+                        affected.has(s.id) || s.status === "Unresolved"
+                          ? "amber"
+                          : s.previous
+                            ? "purple"
+                            : "neutral"
+                      }
+                    >
+                      {affected.has(s.id)
+                        ? "At risk"
+                        : s.status === "Unresolved"
+                          ? "Class canceled · Free"
+                          : s.previous
+                            ? s.status
+                            : s.kind}
                     </Pill>
                     <ChevronRight size={14} />
                   </button>
                 ))}
             </div>
           ))}
-        {!filtered.length && <Empty>No sessions match this view.</Empty>}
+        {viewingCampus && shared.isPending ? (
+          <p role="status">Loading campus timetable…</p>
+        ) : viewingCampus && shared.isError ? (
+          <p role="alert">{errorText(shared.error)}</p>
+        ) : (
+          !filtered.length && <Empty>No sessions match this view.</Empty>
+        )}
       </section>
+      {publishing && (
+        <PublishLesson c={c} day={date} close={() => setPublishing(false)} />
+      )}
       {selected && (
         <Modal
           title={selected.subject}
@@ -252,10 +409,24 @@ export function Timetable({ c }: { c: Campus }) {
                   " – " +
                   time(selected.start + selected.duration),
               ],
-              ["Faculty", c.name(selected.faculty)],
-              ["Room", c.name(selected.room)],
-              ["Cohort", c.name(selected.cohort)],
-              ["Status", selected.status],
+              ["Faculty", label(selected.faculty)],
+              ["Room", label(selected.room)],
+              ["Cohort", label(selected.cohort)],
+              ...(course?.code ? [["Course code", course.code]] : []),
+              ...(course?.faculty.length
+                ? [
+                    [
+                      "Faculty listed on source timetable",
+                      course.faculty.join(", "),
+                    ],
+                  ]
+                : []),
+              [
+                "Status",
+                affected.has(selected.id)
+                  ? "At risk · awaiting recovery"
+                  : selected.status,
+              ],
             ].map(([k, v]) => (
               <div key={k}>
                 <dt>{k}</dt>
@@ -266,8 +437,9 @@ export function Timetable({ c }: { c: Campus }) {
           {selected.previous && (
             <p>
               Previous assignment · {time(selected.previous.start)} ·{" "}
-              {c.name(selected.previous.faculty)} ·{" "}
-              {c.name(selected.previous.room)}
+              {selected.previous.day && pretty(selected.previous.day) + " · "}
+              {label(selected.previous.faculty)} ·{" "}
+              {label(selected.previous.room)}
             </p>
           )}
         </Modal>
@@ -275,26 +447,178 @@ export function Timetable({ c }: { c: Campus }) {
     </>
   );
 }
+
+function PublishLesson({
+  c,
+  day,
+  close,
+}: {
+  c: Campus;
+  day: string;
+  close: () => void;
+}) {
+  const departments = c.resources.filter((r) => r.kind === "Department");
+  const [dept, setDept] = useState(departments[0]?.name || "");
+  const [kind, setKind] = useState("Lecture");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const rooms = c.resources.filter(
+    (r) => r.kind === (kind === "Lecture" ? "Classroom" : "Laboratory"),
+  );
+  return (
+    <Modal title="Publish teaching session" close={close}>
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const values = new FormData(e.currentTarget);
+          setBusy(true);
+          setError("");
+          try {
+            await api.post("/timetable", {
+              ...Object.fromEntries(values),
+              dept,
+              kind,
+              start: fromTime(String(values.get("start"))),
+              duration: Number(values.get("duration")),
+              protected: values.get("protected") === "on",
+              needs: String(values.get("needs") || "")
+                .split("|")
+                .map((s) => s.trim())
+                .filter(Boolean),
+            });
+            await c.refresh();
+            toast.success("Session published");
+            close();
+          } catch (problem) {
+            setError(errorText(problem));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <div className="form-grid">
+          <label>
+            Session ID
+            <input name="id" required maxLength={80} />
+          </label>
+          <label>
+            Subject
+            <input name="subject" required maxLength={160} />
+          </label>
+          <label>
+            Department
+            <select
+              value={dept}
+              required
+              onChange={(e) => setDept(e.target.value)}
+            >
+              {departments.map((r) => (
+                <option key={r.id}>{r.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Session type
+            <select value={kind} onChange={(e) => setKind(e.target.value)}>
+              {["Lecture", "Laboratory", "Examination"].map((value) => (
+                <option key={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Assigned faculty
+            <select name="faculty" key={"faculty" + dept} required>
+              {c.resources
+                .filter((r) => r.kind === "Faculty" && r.dept === dept)
+                .map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label>
+            Section or batch
+            <select name="cohort" key={"cohort" + dept} required>
+              {c.resources
+                .filter((r) => r.kind === "Cohort" && r.dept === dept)
+                .map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label>
+            Room
+            <select name="room" required>
+              {rooms.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Date
+            <input name="day" type="date" defaultValue={day} required />
+          </label>
+          <label>
+            Start time
+            <input name="start" type="time" required defaultValue="09:00" />
+          </label>
+          <label>
+            Duration in minutes
+            <input
+              name="duration"
+              type="number"
+              min="15"
+              max="600"
+              required
+              defaultValue="60"
+            />
+          </label>
+        </div>
+        <label>
+          Required equipment separated by |<input name="needs" />
+        </label>
+        <label className="check">
+          <input name="protected" type="checkbox" /> Protect the scheduled date
+          and time
+        </label>
+        {error && <p role="alert">{error}</p>}
+        <button className="primary" disabled={busy}>
+          Publish session
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
 export function Resources({ c }: { c: Campus }) {
+  const [params] = useSearchParams();
+  const date = selectedDay(params.get("day"), c.dash.today);
   const [q, setQ] = useState(""),
-    [type, setType] = useState(""),
+    [type, setType] = useState(params.get("type") || ""),
     [status, setStatus] = useState(""),
     [sel, setSel] = useState("");
   const [editor, setEditor] = useState<string | null>(null);
   const rows = c.resources.filter(
     (r) =>
-      (!type || r.kind === type) &&
+      (!type ||
+        r.kind === type ||
+        (type === "Teaching spaces" &&
+          ["Classroom", "Laboratory"].includes(r.kind))) &&
       r.name.toLowerCase().includes(q.toLowerCase()),
   );
+  const outages = new Set(c.dash.outage_resources?.[date]);
   const state = (id: string) =>
-    c.cases.some((x) => x.day === c.dash.anchor && id in x.impact.depths)
-      ? "Outage on demo day"
-      : "Operational";
+    outages.has(id) ? "Disruption reported" : "No disruption reported";
   const r = c.resources.find((x) => x.id === sel);
   return (
     <>
       <Intro tag="CAMPUS MODEL" title="Resource inventory">
-        Inspect campus spaces, teaching staff and infrastructure.
+        Resource availability for {pretty(date)}.
       </Intro>
       {editor !== null && (
         <ResourceEditor
@@ -317,6 +641,7 @@ export function Resources({ c }: { c: Campus }) {
             onChange={(e) => setType(e.target.value)}
           >
             <option value="">All resource types</option>
+            <option>Teaching spaces</option>
             {[...new Set(c.resources.map((x) => x.kind))].map((t) => (
               <option key={t}>{t}</option>
             ))}
@@ -327,8 +652,8 @@ export function Resources({ c }: { c: Campus }) {
             onChange={(e) => setStatus(e.target.value)}
           >
             <option value="">All statuses</option>
-            <option>Operational</option>
-            <option>Outage on demo day</option>
+            <option>No disruption reported</option>
+            <option>Disruption reported</option>
           </select>
         </div>
         <div className="tablewrap">
@@ -355,9 +680,7 @@ export function Resources({ c }: { c: Campus }) {
                     <td>{r.kind}</td>
                     <td>{r.dept || "Campus"}</td>
                     <td>
-                      <Pill
-                        tone={state(r.id) === "Operational" ? "teal" : "amber"}
-                      >
+                      <Pill tone={outages.has(r.id) ? "amber" : "teal"}>
                         {state(r.id)}
                       </Pill>
                     </td>
@@ -420,6 +743,8 @@ export function Resources({ c }: { c: Campus }) {
   );
 }
 export function Incidents({ c, report }: { c: Campus; report: () => void }) {
+  const [params, setParams] = useSearchParams();
+  const date = params.get("day");
   const nav = useNavigate(),
     [q, setQ] = useState(""),
     [status, setStatus] = useState(""),
@@ -428,6 +753,7 @@ export function Incidents({ c, report }: { c: Campus; report: () => void }) {
   const filtered = c.cases
     .filter(
       (x) =>
+        (!date || x.day === date) &&
         (!status || x.status === status) &&
         x.title.toLowerCase().includes(q.toLowerCase()),
     )
@@ -447,6 +773,11 @@ export function Incidents({ c, report }: { c: Campus; report: () => void }) {
       <section className="panel">
         <div className="filters">
           <SearchBox value={q} set={setQ} label="Search incidents" />
+          {date && (
+            <button className="secondary" onClick={() => setParams({})}>
+              Clear date · {pretty(selectedDay(date, c.dash.today))}
+            </button>
+          )}
           <select
             aria-label="Incident status"
             value={status}
@@ -615,6 +946,7 @@ export function Notices({ c }: { c: Campus }) {
             </span>
             <div className="grow">
               <b>{n.title}</b>
+              {n.category && <small>{n.category}</small>}
               <p>{n.message}</p>
               <small>{new Date(n.created).toLocaleString()}</small>
             </div>
@@ -635,45 +967,77 @@ export function Notices({ c }: { c: Campus }) {
   );
 }
 export function Analytics({ c }: { c: Campus }) {
+  const [params, setParams] = useSearchParams();
+  const day = selectedDay(params.get("day"), c.dash.today);
+  const query = useResilience(c.user, day);
+  const result = query.data;
   return (
     <>
       <Intro title="Resilience analytics" tag="INSTITUTIONAL READINESS">
-        Readiness indicators calculated from the published timetable and modeled
-        dependencies.
+        Readiness indicators for {pretty(day)}, based on the published timetable
+        and modeled dependencies.
       </Intro>
-      <div className="dash-row">
-        <section className="panel">
-          <h3>Resilience score · {c.dash.score ?? "—"}/100</h3>
-          <p>
-            Equal-weight mean of the measured factors. Recovery success enters
-            the score after a settled incident.
-          </p>
-          {Object.entries(c.dash.factors || {}).map(([k, v]) => (
-            <div className="factor" key={k}>
-              <div>
-                <b>{k}</b>
-                <small>{v === null ? "No observations" : v + "%"}</small>
-              </div>
-              <div className="progress">
-                <i style={{ width: (v || 0) + "%" }} />
-              </div>
-            </div>
-          ))}
-        </section>
-        <section className="panel">
-          <h3>Proactive risk alerts</h3>
-          {c.dash.risks?.map((r) => (
-            <div key={r.title + r.detail} className="row">
-              <div className="grow">
-                <b>{r.title}</b>
-                <small>{r.detail}</small>
-              </div>
-              <Pill tone="amber">{r.severity}</Pill>
-            </div>
-          ))}
-          {!c.dash.risks?.length && <Empty>No rule-based alerts.</Empty>}
-        </section>
+      <div className="datebar">
+        <input
+          aria-label="Analytics date"
+          type="date"
+          value={day}
+          onChange={(e) => {
+            if (e.target.value)
+              setParams({ day: selectedDay(e.target.value, day) });
+          }}
+        />
       </div>
+      {query.isPending && (
+        <p role="status">Calculating resilience for {pretty(day)}…</p>
+      )}
+      {query.isError && (
+        <p role="alert">
+          {result
+            ? "Showing the last successful resilience calculation."
+            : errorText(query.error)}
+        </p>
+      )}
+      {result && result.sessions === 0 && (
+        <Empty>No scheduled sessions on this date.</Empty>
+      )}
+      {result && result.sessions > 0 && (
+        <div className="dash-row">
+          <section className="panel">
+            <h3>Resilience score · {result.score ?? "—"}/100</h3>
+            <p>
+              Equal-weight mean of the measured factors. Recovery success enters
+              the score when the selected day has a settled incident.
+            </p>
+            {Object.entries(result.factors).map(([k, v]) => (
+              <div className="factor" key={k}>
+                <div>
+                  <b>{k}</b>
+                  <small>{v === null ? "No observations" : v + "%"}</small>
+                </div>
+                <div className="progress">
+                  <i style={{ width: (v || 0) + "%" }} />
+                </div>
+              </div>
+            ))}
+          </section>
+          <section className="panel">
+            <h3>Proactive risk alerts</h3>
+            {result.risks.map((r) => (
+              <div key={r.title + r.detail} className="row">
+                <div className="grow">
+                  <b>{r.title}</b>
+                  <small>{r.detail}</small>
+                </div>
+                <Pill tone="amber">{r.severity}</Pill>
+              </div>
+            ))}
+            {!result.risks.length && (
+              <Empty>No rule-based alerts for this date.</Empty>
+            )}
+          </section>
+        </div>
+      )}
     </>
   );
 }
@@ -768,6 +1132,14 @@ function PolicyForm({ c, policy }: { c: Campus; policy: Policy }) {
           onChange={(e) => set({ ...p, hod_approval: e.target.checked })}
         />
         Allow HOD approval for departmental incidents
+      </label>
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={p.allow_substitution || false}
+          onChange={(e) => set({ ...p, allow_substitution: e.target.checked })}
+        />
+        Allow qualified faculty substitution
       </label>
       <label className="check">
         <input

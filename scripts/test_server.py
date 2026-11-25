@@ -12,7 +12,11 @@ from app.main import create_app
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="omnis-e2e-") as folder:
         uvicorn.run(
-            create_app("sqlite:///" + (Path(folder) / "browser.db").as_posix(), True),
+            create_app(
+                "sqlite:///" + (Path(folder) / "browser.db").as_posix(),
+                True,
+                dataset=os.getenv("OMNIS_BROWSER_DATASET", "meridian"),
+            ),
             host="127.0.0.1",
             port=8127,
             log_level="warning",

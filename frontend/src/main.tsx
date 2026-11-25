@@ -96,10 +96,49 @@ import {
   type User,
 } from "./types";
 import "./styles.css";
+import { Events } from "./Events";
 
 const client = new QueryClient({
   defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } },
 });
+
+window.addEventListener("vite:preloadError", (event) => {
+  if (!navigator.onLine) return;
+  const key = "omnis-workspace-reload";
+  try {
+    // Reload once per build so an unavailable asset doesn't cause a loop.
+    if (sessionStorage.getItem(key) === import.meta.url) return;
+    sessionStorage.setItem(key, import.meta.url);
+  } catch {
+    return;
+  }
+  event.preventDefault();
+  window.location.reload();
+});
+
+class WorkspaceViewBoundary extends React.Component<
+  React.PropsWithChildren,
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <section className="panel" role="alert">
+        <p>This workspace page couldn’t load.</p>
+        <button className="secondary" onClick={() => window.location.reload()}>
+          Reload page
+        </button>
+      </section>
+    );
+  }
+}
+
 const links = [
   {
     name: "Overview",
@@ -172,6 +211,13 @@ const links = [
     access: "all",
   },
   {
+    name: "College events",
+    url: "/events",
+    icon: CalendarDays,
+    group: "Operations",
+    access: "all",
+  },
+  {
     name: "Audit history",
     url: "/audit",
     icon: History,
@@ -241,9 +287,15 @@ function Root() {
     cache.setQueryData(["me"], u);
     nav("/");
   };
+  const clearSession = () => {
+    cache.clear();
+    cache.setQueryData(["me"], null);
+    nav("/");
+  };
   return me.data ? (
     <Workspace
       user={me.data}
+      passwordChanged={clearSession}
       logout={async () => {
         try {
           await api.post("/auth/logout");
@@ -259,7 +311,15 @@ function Root() {
     <Login onLogin={login} />
   );
 }
-function Workspace({ user, logout }: { user: User; logout: () => void }) {
+function Workspace({
+  user,
+  logout,
+  passwordChanged,
+}: {
+  user: User;
+  logout: () => void;
+  passwordChanged: () => void;
+}) {
   const cache = useQueryClient(),
     nav = useNavigate(),
     loc = useLocation(),
@@ -273,6 +333,8 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const [dark, setDark] = useState(
     localStorage.getItem("omnis-theme") === "dark",
   );
+  const [passwordError, setPasswordError] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     localStorage.setItem("omnis-theme", dark ? "dark" : "light");
@@ -287,6 +349,7 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
   const data = useQuery({
     queryKey: ["campus", user.id],
     refetchInterval: 5000,
+    refetchIntervalInBackground: true,
     queryFn: async () => {
       const [dash, resources, lessons, cases, plans, notices] =
         await Promise.all([
@@ -316,7 +379,10 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     refresh: async () => {
       await cache.invalidateQueries();
     },
-    name: (id) => data.data.resources.find((r) => r.id === id)?.name || id,
+    name: (id) =>
+      data.data.resources.find((r) => r.id === id)?.name ||
+      data.data.dash.assignment_names[id] ||
+      id,
   };
   const allowed = links.filter(
     (l) =>
@@ -334,15 +400,24 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
     nav(s);
   };
   const pages: Record<string, React.ReactNode> = {
-    "/": <DashboardPage c={c} report={() => setForm(true)} />,
+    "/": (
+      <DashboardPage
+        c={c}
+        report={() => setForm(true)}
+        refreshedAt={data.dataUpdatedAt}
+        refreshing={data.isFetching}
+        stale={data.isError}
+      />
+    ),
     "/twin": <Twin c={c} />,
     "/scenarios": <Scenarios c={c} />,
     "/recovery": <Recovery c={c} />,
-    "/timetable": <Timetable c={c} />,
+    "/timetable": <Timetable key={loc.search} c={c} />,
     "/incidents": <Incidents c={c} report={() => setForm(true)} />,
-    "/resources": <Resources c={c} />,
+    "/resources": <Resources key={loc.search} c={c} />,
     "/analytics": <Analytics c={c} />,
     "/notifications": <Notices c={c} />,
+    "/events": <Events c={c} />,
     "/substitutions": <Substitutions c={c} />,
     "/audit": <AuditPage c={c} />,
     "/settings": <Settings c={c} />,
@@ -363,8 +438,25 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
             <Building2 size={18} />
           </div>
           <div>
-            <b>Meridian Institute</b>
-            <small>Demo campus</small>
+            <b>
+              {c.dash.campus_name ??
+                (c.dash.demo ? "Meridian Institute" : "Campus workspace")}
+            </b>
+            <small>
+              {user.dept
+                ? [
+                    user.dept,
+                    user.profile?.semester &&
+                      "Semester " + user.profile.semester,
+                    user.profile?.section && "Section " + user.profile.section,
+                    user.profile?.batch,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")
+                : c.dash.demo
+                  ? "Demo campus"
+                  : ""}
+            </small>
           </div>
         </div>
         <nav>
@@ -459,7 +551,9 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
               </span>
               <div>
                 <b>{user.name}</b>
-                <small>{user.role}</small>
+                <small>
+                  {[user.role, user.dept].filter(Boolean).join(" · ")}
+                </small>
               </div>
               <ChevronDown size={13} />
             </button>
@@ -470,6 +564,19 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
               <p>
                 {user.role} · {user.dept || "Institute"}
               </p>
+              <p>
+                {user.profile?.designation || user.id}
+                {user.email && " · " + user.email}
+              </p>
+              <button
+                className="secondary"
+                onClick={() => {
+                  setPasswordError("");
+                  setPop("password");
+                }}
+              >
+                Change password
+              </button>
               <button className="secondary" onClick={logout}>
                 <LogOut size={15} />
                 Sign out
@@ -502,7 +609,8 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
           {staff && loc.pathname === "/" && (
             <div className="overview-top">
               <span>
-                <i className="online" /> Workspace online
+                <i className={data.isError ? undefined : "online"} />{" "}
+                {data.isError ? "Live refresh interrupted" : "Workspace online"}
               </span>
               <button className="textbtn" onClick={() => setForm(true)}>
                 <Plus size={14} />
@@ -510,17 +618,30 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
               </button>
             </div>
           )}
-          <React.Suspense fallback={<p>Loading workspace view…</p>}>
-            <Routes>
-              {allowed.map((l) => (
-                <Route key={l.url} path={l.url} element={pages[l.url]} />
-              ))}
-              <Route path="*" element={<Navigate replace to="/" />} />
-            </Routes>
-          </React.Suspense>
+          <WorkspaceViewBoundary key={loc.pathname}>
+            <React.Suspense fallback={<p>Loading workspace view…</p>}>
+              <Routes>
+                {allowed.map((l) => (
+                  <Route key={l.url} path={l.url} element={pages[l.url]} />
+                ))}
+                <Route path="*" element={<Navigate replace to="/" />} />
+              </Routes>
+            </React.Suspense>
+          </WorkspaceViewBoundary>
           <footer>
             OMNIS-X{" "}
-            <span>Meridian Institute · Fictional demonstration campus</span>
+            <span>
+              {c.dash.demo_profile
+                ? [
+                    user.dept || c.dash.demo_profile.demo_label,
+                    "Demonstration",
+                  ].join(" · ")
+                : c.dash.campus_name
+                  ? c.dash.campus_name + " · Demonstration"
+                  : c.dash.demo
+                    ? "Meridian Institute · Fictional demonstration campus"
+                    : "Campus workspace"}
+            </span>
           </footer>
         </div>
       </main>
@@ -552,7 +673,9 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
                 <button
                   className="row linkrow"
                   key={s.id}
-                  onClick={() => go("/timetable?day=" + s.day)}
+                  onClick={() =>
+                    go("/timetable?day=" + s.day + "&session=" + s.id)
+                  }
                 >
                   <CalendarDays size={16} />
                   {s.subject} · {s.day}
@@ -570,6 +693,70 @@ function Workspace({ user, logout }: { user: User; logout: () => void }) {
             setReported(x);
           }}
         />
+      )}
+      {pop === "password" && (
+        <Modal title="Change password" close={() => setPop("")}>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const form = new FormData(e.currentTarget);
+              if (form.get("password") !== form.get("confirm")) {
+                setPasswordError("The new passwords do not match.");
+                return;
+              }
+              setChangingPassword(true);
+              setPasswordError("");
+              try {
+                await api.post("/auth/password", {
+                  current_password: form.get("current"),
+                  password: form.get("password"),
+                });
+                passwordChanged();
+                toast.success(
+                  "Password changed. Sign in with your new password.",
+                );
+              } catch (problem) {
+                setPasswordError(errorText(problem));
+              } finally {
+                setChangingPassword(false);
+              }
+            }}
+          >
+            <label>
+              Current password
+              <input
+                name="current"
+                type="password"
+                required
+                autoComplete="current-password"
+              />
+            </label>
+            <label>
+              New password
+              <input
+                name="password"
+                type="password"
+                minLength={12}
+                required
+                autoComplete="new-password"
+              />
+            </label>
+            <label>
+              Confirm new password
+              <input
+                name="confirm"
+                type="password"
+                minLength={12}
+                required
+                autoComplete="new-password"
+              />
+            </label>
+            {passwordError && <p role="alert">{passwordError}</p>}
+            <button className="primary" disabled={changingPassword}>
+              Save password
+            </button>
+          </form>
+        </Modal>
       )}
       {reported && (
         <Modal

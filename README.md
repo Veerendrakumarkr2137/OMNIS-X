@@ -1,118 +1,101 @@
 # OMNIS-X
 
-**Intelligent Institutional Digital Twin and Automated Recovery Platform**  
-Predict. Adapt. Recover.
+OMNIS-X is a campus operations portal for publishing timetables, tracing campus dependencies and recovering teaching sessions after disruptions. Students see their section, batch and registered courses. Faculty see their own assignments and can report absences. Department heads, administrators and operations staff use separate workspaces to review resources, incidents and recovery options.
 
-OMNIS-X is a runnable hackathon application for a fictional institution. A faculty member can report an absence, an authorized reviewer can compare qualified recovery alternatives, and approval publishes a revised timetable to the affected faculty and students.
+| Guide | What it covers |
+| --- | --- |
+| [Architecture](docs/architecture.md) | System design, data model, role boundaries, recovery and resilience |
+| [API](docs/api.md) | Routes, request formats, access rules and institutional import |
+| [Demo walkthrough](docs/demo-guide.md) | Student batches, faculty absence, recovery, Digital twin and Supabase table navigation |
+| [Verification](docs/verification.md) | Reproducible checks, observed results and remaining coverage |
 
-## Start the local project
+## Start the portal
 
-The release ZIP contains the working source and a built frontend. Install Python 3.11 or newer with pip. Rebuilding the frontend requires Node.js 22.12 or newer and npm. The project was exercised on Windows with Python 3.14 and Node.js 22.
+Use Python 3.11 or later with pip. For frontend development or a fresh frontend build, use Node.js 22.12 or later with npm. The launchers bind to localhost, install Python dependencies and build the frontend if `frontend/dist/index.html` is missing. Initial dependency installation requires internet access.
 
-From the extracted project directory on Windows, run:
+On Windows, run the launcher from the project directory.
 
 ```bat
 scripts\start_windows.bat
 ```
 
-On Linux or macOS, run:
+On Linux or macOS, run the shell launcher.
 
 ```sh
 bash scripts/start_linux.sh
 ```
 
-Open **http://127.0.0.1:8000**. The launchers create a local Python virtual environment, install backend dependencies and serve the bundled frontend. If the frontend build is missing, they install the locked npm dependencies and build it. Initial dependency installation requires internet access.
-
-### Development terminals
-
-In PowerShell, from the project directory:
+Open [OMNIS-X](http://127.0.0.1:8000). The built frontend and API are served from the same origin. In development, install the backend dependencies in a virtual environment, start the API, then run Vite in a second terminal.
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python -m pip install -r backend\requirements.txt
-.\.venv\Scripts\python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-In a second terminal:
-
 ```powershell
-cd frontend
+Set-Location frontend
 npm.cmd ci
 npm.cmd run dev
 ```
 
-Open the Vite localhost URL printed in that terminal. Vite proxies API requests to port 8000. Run `npm.cmd run build` to type-check the client and refresh the production assets.
+Vite prints its local URL and proxies `/api` to port 8000. Run `npm.cmd run build` in `frontend` to type-check and build assets for FastAPI.
 
-### Database setup
+## Choose a database
 
-The first launch creates **backend/omnis.db** and seeds the fictional campus once. The seed includes three departments, twelve lecturers, six cohorts, eight classrooms, four labs, thirty sessions, infrastructure dependencies, one official classroom outage and initial notifications. The database persists across restarts.
+FastAPI reads process environment variables and fills unset values from the ignored root `.env` file. See [environment examples](.env.example) for the variable names.
 
-Use `OMNIS_DEMO_DATE=YYYY-MM-DD` before first launch to anchor a reproducible demonstration. Use a new `DATABASE_URL` to start another campus without overwriting data. The standalone initializer is `python scripts/seed_database.py` from an activated backend environment. The variables in `.env.example` are read from the process environment.
+| Setting | Behavior |
+| --- | --- |
+| `DATABASE_URL` | Selects the SQLite file or PostgreSQL instance. The local default is `backend/omnis-iiet.db` in IIET demo mode, and `backend/omnis.db` otherwise. |
+| `OMNIS_DEMO` | Defaults to `1` and enables local guest access. With `0`, new databases use the environment-provisioned administrator and secure cookies. |
+| `OMNIS_DEMO_DATASET` | `iiet` is the portal default. `meridian` selects the fictional campus fixture. |
+| `OMNIS_DEMO_DATE` | Sets the seed date when initializing a new database. IIET anchors to Monday in the selected week. |
+| `OMNIS_ADMIN` and `OMNIS_ADMIN_PASSWORD` | Required when initializing a fresh non-demo database. The initial password must contain at least 12 characters. |
 
-## Local demo access
+### Local SQLite
 
-Select a role on the sign-in screen or enter its credentials. The backend determines the role from the authenticated identity.
+On first launch the IIET fixture supplies CSE Semester V schedules for Sections A–F, B1 and B2 guest students, fictional ECE records, and sample incidents. Data persists across restarts. For a clean demo, point `DATABASE_URL` at a new SQLite file and select a seed date before launch. To initialize a configured database without serving the UI, run `python scripts/seed_database.py` from the backend environment.
 
-| Role | Username | Password |
-| --- | --- | --- |
-| Administrator | admin | Admin@123 |
-| Head of department | hod | Hod@123 |
-| Faculty | faculty | Faculty@123 |
-| Student | student | Student@123 |
-| Operations | operator | Operator@123 |
+### Supabase PostgreSQL
 
-The five public demo accounts are for local use. Additional faculty and cohort identities have individual inboxes. An administrator can create an account linked to any of those identities to demonstrate recipient-specific delivery or substitute consent.
+The connected OMNIS-X Supabase project stores operational data in the private `omnisx` schema. Open the schema-specific link to see the tables directly. [OMNIS-X database tables](https://supabase.com/dashboard/project/wwzockububqslawmsrkv/database/tables?schema=omnisx).
 
-## Implemented features
+- `omnisx.student_roster` contains 399 CSE Semester V student records for 12 batches in Sections A–F.
+- `omnisx.timetable_reference_pages` contains six source timetable grids and 54 course assignments.
+- `omnisx.student_timetable` joins the roster to published section and batch sessions. The individual PEC and AEC updates require readable copies of their separate source PDFs.
 
-- Five authenticated roles with scoped dashboards, protected routes, department and owner checks, expiring HTTP-only sessions and Argon2 password hashes.
-- Partial-day and full-day faculty absences, automatic impact analysis, qualified faculty substitution, room reassignment, same-day rescheduling and up to three distinct ranked plans.
-- Constraint-aware CP-SAT selection and independent revalidation. Complete, partial and unrecoverable cases have distinct outcomes and explainable session-level changes.
-- Reviewer recommendation, rejection and transactional approval, configurable departmental authority, optional substitute consent, and manual, assisted and limited automatic modes.
-- Versioned daily, weekly and list timetables, five-second live refresh, targeted notifications, safe stale-plan handling and an audit trail.
-- Role-scoped resource inventory, administrative accounts, department and resource creation, and validated editing of capacity, available teaching intervals and qualifications.
-- Interactive campus dependency graph and isolated what-if simulations, including concurrent failures, power cascades, network outages and protected examinations.
-- Plan comparison, JSON export, operational readiness analytics, responsive navigation, dark and light themes and accessible dialogs.
+For an existing configured project, use its **Session pooler** connection details with the dedicated `omnisx_app` database login. Keep `DATABASE_URL` in the backend environment or root `.env`. Use certificate verification and the [bundled CA file](backend/supabase-root.crt) when appropriate for the project's connection details. URL-encode the password and query parameter values. [Supabase Postgres connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres).
 
-## Source and documentation
+```dotenv
+DATABASE_URL=postgresql+psycopg://omnisx_app.PROJECT_REF:URL_ENCODED_PASSWORD@SESSION_POOLER_HOST:5432/postgres?sslmode=verify-full&sslrootcert=ABSOLUTE_CA_PATH
+```
+
+For a fresh Supabase deployment, generate the application schema with `python scripts/supabase_schema.py` and apply its SQL as a PostgreSQL administrator. Provision the generated dedicated role for password login using the project's secure administration tools. The schema generator covers the operational ORM tables. The imported roster, reference grids and timetable view belong to the connected project's separate data migration.
+
+For a SQLite cutover, stop the source writer, retain a backup and provision an empty target. Configure `DATABASE_URL` and run `python scripts/migrate_sqlite_to_supabase.py backend/omnis-iiet.db` before starting FastAPI against that target. The copy runs in a transaction, checks table counts and omits active authentication sessions. Users sign in again after the cutover.
+
+## Workspaces
+
+| Workspace | Typical work |
+| --- | --- |
+| Administrator | Campus view, accounts and imports, resource directory, policy, recovery approval and audit |
+| Department head | Department timetable, incident review, leave and events, and delegated approval when policy permits |
+| Faculty | Personal teaching timetable, read-only campus bookings, absence reports, leave, room issues and substitute requests |
+| Student | Section- and batch-scoped timetable, registered courses, college events and notifications |
+| Operations | Campus bookings, infrastructure reports, Digital twin, simulations and plan recommendations |
+
+On a local demo sign-in screen, choose a guest role. Under **Student Access**, choose **Batch B1 demo** or **Batch B2 demo**. The portal authenticates the account and checks the selected role when a role-specific sign-in is used. See the [demo guide](docs/demo-guide.md) for a step-by-step run.
+
+## Repository map
 
 | Location | Contents |
 | --- | --- |
-| frontend/src | React workspaces, digital twin, scenario form, recovery comparison, timetable, directory and notifications |
-| frontend/e2e | Desktop and mobile browser acceptance tests |
-| backend/app | FastAPI routes, database models, seed data, administration, policies and workflow services |
-| backend/app/engine | Dependency traversal, constraint validation, candidates, CP-SAT and ranking |
-| backend/tests | API, security, optimization, transaction and persistence checks |
-| scripts | Windows and Unix startup, database initialization and isolated browser test server |
-| docs | Architecture, API reference, demonstration guide and verification record |
+| [frontend/src](frontend/src) | React, TypeScript, routes, role views, React Query polling, React Flow and Recharts |
+| [backend/app](backend/app) | FastAPI, Pydantic, SQLAlchemy, authentication, timetable, imports and publication |
+| [backend/app/engine](backend/app/engine) | NetworkX dependency analysis, constraint checks, OR-Tools CP-SAT search and ranking |
+| [backend/tests](backend/tests) and [frontend/e2e](frontend/e2e) | API, persistence, solver and browser coverage |
+| [scripts](scripts) | Startup, initialization, Supabase schema generation, SQLite migration and browser test server |
 
-**Frontend** uses React, Vite, TypeScript, Tailwind CSS, Radix UI Dialog, Lucide, Framer Motion, React Router, React Flow, Recharts, TanStack Query, React Hook Form, Zod, Sonner and Axios. **Backend** uses FastAPI, Uvicorn, Pydantic, SQLAlchemy, SQLite, NetworkX, OR-Tools CP-SAT and Argon2.
-
-See the [demo walkthrough](docs/demo-guide.md), [architecture and score formulas](docs/architecture.md), [API guide](docs/api.md) and [test record](docs/verification.md).
-
-## Run the tests
-
-From the project directory in PowerShell:
-
-```powershell
-cd backend
-..\.venv\Scripts\python -m pytest -q
-cd ..\frontend
-npm.cmd ci
-npm.cmd test
-npm.cmd run build
-$env:OMNIS_PYTHON = (Resolve-Path ..\.venv\Scripts\python.exe).Path
-$env:OMNIS_CHROME_CHANNEL = 'chrome'
-npm.cmd run test:e2e
-```
-
-The browser suite launches a separate disposable demo on port 8127. For Playwright-managed Chromium, omit the Chrome-channel variable and run `npx playwright install chromium` first. Tests use fresh databases and leave the live demo timetable intact.
-
-## Scope and limitations
-
-- The local release uses SQLite. PostgreSQL, public hosting, external identity providers, email delivery, schema upgrades and production deployment have not been verified.
-- Recovery searches later half-hour slots on the same date. It preserves protected exam times and unaffected sessions. Multi-day reoptimization and post-publication rollback are outside this release.
-- Readiness indicators use explicit rules and inventory coverage. Student counts derive from non-overlapping fictional cohorts. The demo models an outage as a bounded time interval and shows resource exposure over the selected demo day.
-- Faculty reports take effect as availability events. Formal HR leave adjudication, an announcements editor and a separate examination authoring workflow are outside the hackathon build.
-- The schema is created on first run using SQLAlchemy. Supply a fresh database when switching between demo and non-demo modes.
+The [verification guide](docs/verification.md) contains the backend, frontend, build and browser commands. The packaged demonstration is a loopback deployment. A hosted installation needs HTTPS, environment-specific secret management and its own operational validation.
 

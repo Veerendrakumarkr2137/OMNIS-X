@@ -1,9 +1,8 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api, errorText, get } from "./api";
+import { api, errorText } from "./api";
 import { Modal } from "./ui";
-import type { Campus, Resource, User } from "./types";
+import type { Campus, Resource } from "./types";
 const types = [
   "Classroom",
   "Laboratory",
@@ -24,6 +23,7 @@ export function ResourceEditor({
   const ds = c.resources.filter((x) => x.kind === "Department"),
     buildings = c.resources.filter((x) => x.kind === "Building");
   const [kind, setKind] = useState(resource?.kind || "Classroom"),
+    [department, setDepartment] = useState(resource?.dept || ds[0]?.name || ""),
     [busy, setBusy] = useState(false),
     [msg, setMsg] = useState("");
   const r = resource?.details;
@@ -51,6 +51,14 @@ export function ResourceEditor({
         Number(f.get("availableStart") || 480),
         Number(f.get("availableEnd") || 1080),
       ],
+      ...(kind === "Cohort"
+        ? {
+            members: f.getAll("members"),
+            semester: f.get("semester"),
+            section: f.get("section"),
+            batch: f.get("batch"),
+          }
+        : {}),
     };
     try {
       if (resource) await api.put("/resources/" + resource.id, payload);
@@ -94,7 +102,11 @@ export function ResourceEditor({
         {!["Building", "Department"].includes(kind) && (
           <label>
             Department
-            <select name="dept" defaultValue={resource?.dept || ds[0]?.name}>
+            <select
+              name="dept"
+              value={department}
+              onChange={(e) => setDepartment(e.target.value)}
+            >
               {ds.map((d) => (
                 <option key={d.id}>{d.name}</option>
               ))}
@@ -177,6 +189,47 @@ export function ResourceEditor({
             </div>
           </>
         )}
+        {kind === "Cohort" && (
+          <>
+            <div className="form-grid">
+              <label>
+                Semester
+                <input name="semester" defaultValue={r?.semester} />
+              </label>
+              <label>
+                Section
+                <input name="section" defaultValue={r?.section} />
+              </label>
+              <label>
+                Batch
+                <input name="batch" defaultValue={r?.batch} />
+              </label>
+            </div>
+            <label>
+              Batches included in this section
+              <select
+                name="members"
+                multiple
+                key={department}
+                defaultValue={r?.members}
+              >
+                {c.resources
+                  .filter(
+                    (item) =>
+                      item.kind === "Cohort" &&
+                      item.id !== resource?.id &&
+                      item.dept === department &&
+                      !item.details.members?.length,
+                  )
+                  .map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+          </>
+        )}
         {msg && (
           <p className="error" role="alert">
             {msg}
@@ -187,131 +240,5 @@ export function ResourceEditor({
         </button>
       </form>
     </Modal>
-  );
-}
-export function Accounts({ c }: { c: Campus }) {
-  const [open, setOpen] = useState(false),
-    [role, setRole] = useState("Student"),
-    [dept, setDept] = useState(
-      c.resources.find((r) => r.kind === "Department")?.name || "",
-    ),
-    [busy, setBusy] = useState(false),
-    [msg, setMsg] = useState("");
-  const users = useQuery({
-    queryKey: ["users"],
-    queryFn: () => get<User[]>("/users"),
-  });
-  async function save(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const f = new FormData(e.currentTarget);
-    setBusy(true);
-    setMsg("");
-    try {
-      await api.post("/users", {
-        username: f.get("username"),
-        password: f.get("password"),
-        name: f.get("name"),
-        role,
-        dept: ["Admin", "Operator"].includes(role) ? null : dept,
-        resource: f.get("resource"),
-      });
-      await c.refresh();
-      setOpen(false);
-      toast.success("Account created");
-    } catch (e) {
-      setMsg(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <section className="panel policy directory">
-      <div className="panel-head">
-        <h3>Campus accounts</h3>
-        <button className="secondary" onClick={() => setOpen(true)}>
-          Add account
-        </button>
-      </div>
-      <details>
-        <summary>View directory ({users.data?.length ?? 0})</summary>
-        {users.data?.map((u) => (
-          <div className="row" key={u.id}>
-            <div className="grow">
-              <b>{u.name}</b>
-              <small>{u.id}</small>
-            </div>
-            <span>
-              {u.role} · {u.dept || "Campus"}
-            </span>
-          </div>
-        ))}
-      </details>
-      {open && (
-        <Modal title="Add campus account" close={() => setOpen(false)}>
-          <form onSubmit={save}>
-            <label>
-              Display name
-              <input name="name" required />
-            </label>
-            <label>
-              Username
-              <input name="username" required autoComplete="off" />
-            </label>
-            <label>
-              Password
-              <input
-                name="password"
-                type="password"
-                minLength={12}
-                required
-                autoComplete="new-password"
-              />
-            </label>
-            <label>
-              Role
-              <select value={role} onChange={(e) => setRole(e.target.value)}>
-                {["Student", "Faculty", "HOD", "Operator", "Admin"].map((x) => (
-                  <option key={x}>{x}</option>
-                ))}
-              </select>
-            </label>
-            {!["Admin", "Operator"].includes(role) && (
-              <label>
-                Department
-                <select value={dept} onChange={(e) => setDept(e.target.value)}>
-                  {c.resources
-                    .filter((r) => r.kind === "Department")
-                    .map((r) => (
-                      <option key={r.id}>{r.name}</option>
-                    ))}
-                </select>
-              </label>
-            )}
-            {["Student", "Faculty"].includes(role) && (
-              <label>
-                Identity
-                <select name="resource" required>
-                  {c.resources
-                    .filter(
-                      (r) =>
-                        r.dept === dept &&
-                        r.kind === (role === "Faculty" ? "Faculty" : "Cohort"),
-                    )
-                    .map((r) => (
-                      <option value={r.id} key={r.id}>
-                        {r.name}
-                      </option>
-                    ))}
-                </select>
-              </label>
-            )}
-            {msg && <p className="error">{msg}</p>}
-            <button className="primary" disabled={busy}>
-              Create account
-            </button>
-          </form>
-        </Modal>
-      )}
-    </section>
   );
 }

@@ -14,6 +14,13 @@ from sqlalchemy import (
     event,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.engine import make_url
+from dotenv import load_dotenv
+
+
+POSTGRES_SCHEMA = "omnisx"
+PROJECT_ENV = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(PROJECT_ENV)
 
 
 class Base(DeclarativeBase):
@@ -76,6 +83,24 @@ class Login(Base):
     expires = Column(Integer, nullable=False)
 
 
+class Account(Base):
+    """Optional extension of legacy identities. A missing row keeps legacy login valid."""
+
+    __tablename__ = "account_profiles"
+    user_id = Column(ForeignKey("users.id"), primary_key=True)
+    department_id = Column(ForeignKey("resources.id"), index=True)
+    email = Column(String, unique=True)
+    active = Column(Boolean, nullable=False, default=True)
+    details = Column(JSON, nullable=False, default=dict)
+
+
+class Enrollment(Base):
+    __tablename__ = "student_enrollments"
+    student_id = Column(ForeignKey("users.id"), primary_key=True)
+    subject = Column(String, primary_key=True)
+    category = Column(String, nullable=False, default="Core")
+
+
 class Case(Base):
     __tablename__ = "incidents"
     id = Column(Integer, primary_key=True)
@@ -101,6 +126,31 @@ class Plan(Base):
     rank = Column(Integer, nullable=False)
     data = Column(JSON, nullable=False)
     status = Column(String, default="Pending")
+
+
+class CollegeEvent(Base):
+    __tablename__ = "college_events"
+    id = Column(Integer, primary_key=True)
+    department_id = Column(ForeignKey("resources.id"), index=True)
+    name = Column(String, nullable=False)
+    day = Column(String, index=True, nullable=False)
+    end_day = Column(String, nullable=False)
+    start = Column(Integer, nullable=False)
+    end = Column(Integer, nullable=False)
+    mandatory = Column(Boolean, nullable=False)
+    scope = Column(JSON, nullable=False)
+    case_id = Column(ForeignKey("incidents.id"), unique=True, index=True)
+
+
+class LeaveRequest(Base):
+    __tablename__ = "leave_requests"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(ForeignKey("users.id"), nullable=False, index=True)
+    day = Column(String, index=True, nullable=False)
+    start = Column(Integer, nullable=False)
+    end = Column(Integer, nullable=False)
+    reason = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="Pending")
 
 
 class Notice(Base):
@@ -139,21 +189,64 @@ class State(Base):
     anchor = Column(String, nullable=False)
 
 
-def factory(url=None):
-    path = Path(__file__).resolve().parents[1] / "omnis.db"
-    url = url or os.getenv("DATABASE_URL") or f"sqlite:///{path.as_posix()}"
-    sqlite = url.startswith("sqlite")
-    engine = create_engine(
-        url, connect_args={"check_same_thread": False, "timeout": 30} if sqlite else {}
+def database_engine(url=None, filename="omnis.db"):
+    path = Path(__file__).resolve().parents[1] / filename
+    target = make_url(
+        url or os.getenv("DATABASE_URL") or f"sqlite:///{path.as_posix()}"
     )
-    if sqlite:
+    if target.get_backend_name() in ("postgresql", "postgres"):
+        args = {"connect_timeout": 10}
+        if target.host and target.host.endswith((".supabase.co", ".supabase.com")):
+            mode = target.query.get("sslmode", "verify-full")
+            if mode not in ("verify-full", "verify-ca"):
+                raise ValueError(
+                    "Supabase connections require certificate verification."
+                )
+            import certifi
 
-        @event.listens_for(engine, "connect")
-        def configure(conn, _):
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA journal_mode=WAL")
+            args["sslmode"] = mode
+            args["sslrootcert"] = target.query.get("sslrootcert") or certifi.where()
+            if target.port == 6543:
+                args["prepare_threshold"] = None
+        return create_engine(
+            target.set(drivername="postgresql+psycopg"),
+            connect_args=args,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=2,
+            execution_options={"schema_translate_map": {None: POSTGRES_SCHEMA}},
+        )
+    if target.get_backend_name() != "sqlite":
+        raise ValueError("Use a SQLite or PostgreSQL DATABASE_URL.")
+    engine = create_engine(
+        target, connect_args={"check_same_thread": False, "timeout": 30}
+    )
 
-    Base.metadata.create_all(engine)
+    @event.listens_for(engine, "connect")
+    def configure(conn, _):
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA journal_mode=WAL")
+
+    return engine
+
+
+def factory(url=None, filename="omnis.db"):
+    engine = database_engine(url, filename)
+    if engine.dialect.name == "sqlite":
+        Base.metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_users_lower_login_id ON users (lower(id))"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_users_department_role ON users (dept, role)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_lessons_department_day ON academic_sessions (dept, day)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_lessons_faculty_day ON academic_sessions (faculty, day)"
+            )
     return sessionmaker(engine, expire_on_commit=False)
 
 

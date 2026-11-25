@@ -1,9 +1,13 @@
+from datetime import date, timedelta
 from fastapi import HTTPException
 from sqlalchemy import update
 from .database import (
     Audit,
+    Account,
     Case,
     Consent,
+    CollegeEvent,
+    Enrollment,
     Lesson,
     Notice,
     Plan,
@@ -12,9 +16,10 @@ from .database import (
     fields,
     rows,
 )
-from .engine.graph import analyze, graph, inventory
-from .engine.optimizer import solve
+from .engine.graph import analyze, graph, inventory, unique_students
+from .engine.optimizer import solve, swap_alternatives
 from .engine.validation import validate
+from .events import blocks_session, dates, reservation_keys
 
 LESSON_FIELDS = "id day subject dept faculty room cohort start duration kind needs protected status previous"
 CASE_FIELDS = (
@@ -23,10 +28,16 @@ CASE_FIELDS = (
 PLAN_FIELDS = "id case_id revision rank data status"
 
 
-def lessons(db, day=None):
+def lessons(db, day=None, *, dept=None, faculty=None, days=None):
     q = db.query(Lesson)
     if day:
         q = q.filter_by(day=day)
+    if dept is not None:
+        q = q.filter_by(dept=dept)
+    if faculty is not None:
+        q = q.filter_by(faculty=faculty)
+    if days is not None:
+        q = q.filter(Lesson.day.in_(days))
     return [
         fields(s, LESSON_FIELDS)
         for s in q.order_by(Lesson.day, Lesson.start, Lesson.id)
@@ -58,7 +69,9 @@ def visible(c, u):
 
 def notify(db, users, title, message, route):
     for u in users:
-        db.add(Notice(user_id=u.id, title=title, message=message, route=route))
+        account = db.get(Account, u.id)
+        if not account or account.active:
+            db.add(Notice(user_id=u.id, title=title, message=message, route=route))
 
 
 def reviewers(db, c):
@@ -72,29 +85,140 @@ def reviewers(db, c):
 def context(db, c):
     res = inventory(db)
     g = graph(db)
-    day = lessons(db, c.day)
-    impact = analyze(g, res, day, c.roots, c.start, c.end)
-    active = db.query(Case).filter_by(day=c.day, simulation=False).all()
-    outages = [(set(x.impact["depths"]), x.start, x.end) for x in active]
+    event = db.query(CollegeEvent).filter_by(case_id=c.id).one_or_none()
+    actor = db.get(User, c.actor)
+    last_day = event.end_day if event else c.day
+    horizon = (
+        (date.fromisoformat(last_day) + timedelta(days=6)).isoformat()
+        if (
+            event or (actor and actor.role == "Faculty" and c.roots == [actor.resource])
+        )
+        else last_day
+    )
+    outages = {
+        day: []
+        for day in dates(c.day, horizon)
+        if date.fromisoformat(day).weekday() != 6 or day <= last_day
+    }
+    schedule = lessons(db, days=list(outages))
+    if event:
+        keys = reservation_keys(db, event, schedule, res)
+        affected = [
+            s
+            for s in schedule
+            if s["status"] != "Unresolved" and blocks_session(s, event, keys, res)
+        ]
+        cohorts = sorted({s["cohort"] for s in affected})
+        impact = {
+            "depths": {id: 0 for id in event.scope["rooms"] + event.scope["faculty"]},
+            "sessions": [s["id"] for s in affected],
+            "cohorts": cohorts,
+            "students": unique_students(cohorts, res),
+            "departments": sorted(
+                {s["dept"] for s in affected}
+                or {event.scope["department"] or "Institution"}
+            ),
+            "exams": sum(s["kind"] == "Examination" for s in affected),
+            "minutes": (event.end - event.start)
+            * len(list(dates(event.day, event.end_day))),
+            "end_day": event.end_day,
+        }
+        if not event.department_id:
+            impact["departments"] = sorted({"Institution", *impact["departments"]})
+    else:
+        impact = analyze(
+            g, res, [s for s in schedule if s["day"] == c.day], c.roots, c.start, c.end
+        )
+        affected = [s for s in schedule if s["id"] in impact["sessions"]]
+    reservations = (
+        db.query(CollegeEvent)
+        .filter(CollegeEvent.day <= horizon, CollegeEvent.end_day >= c.day)
+        .all()
+    )
+    event_cases = {reservation.case_id for reservation in reservations}
+    for other in db.query(Case).filter(
+        Case.simulation.is_(False), Case.day.in_(outages)
+    ):
+        if other.id not in event_cases:
+            outages[other.day].append(
+                (set(other.impact["depths"]), other.start, other.end)
+            )
+    for reservation in reservations:
+        keys = reservation_keys(db, reservation, schedule, res)
+        for day in outages:
+            if reservation.day <= day <= reservation.end_day:
+                outages[day].append((keys, reservation.start, reservation.end))
     if c.simulation:
-        outages.append((set(impact["depths"]), c.start, c.end))
-    affected = [s for s in day if s["id"] in impact["sessions"]]
+        outages[c.day].append((set(impact["depths"]), c.start, c.end))
     fixed = [
         s
-        for s in day
+        for s in schedule
         if s["id"] not in impact["sessions"] and s["status"] != "Unresolved"
     ]
     return impact, affected, fixed, res, outages
 
 
-def generate(db, c, state):
-    if c.status in ("Recovered", "Partial recovery", "No impact"):
+def generate(db, c, state, scope_dept=None):
+    if c.status in ("Recovered", "Partial recovery", "No impact", "Class canceled"):
         raise HTTPException(409, "This incident is already settled.")
     impact, affected, fixed, res, outages = context(db, c)
+    if scope_dept and impact["departments"] != [scope_dept]:
+        raise HTTPException(
+            403, "Cross-department recovery requires administrator review."
+        )
     for p in db.query(Plan).filter_by(case_id=c.id, status="Pending"):
         p.status = "Superseded"
     plans = []
-    alternatives, status = solve(affected, fixed, res, outages, state.settings)
+    settings = {**state.settings, "recovery_days": tuple(outages)}
+    alternatives, status = solve(affected, fixed, res, outages, settings)
+    person = db.get(User, c.actor)
+    if (
+        not c.simulation
+        and person
+        and person.role == "Faculty"
+        and c.roots == [person.resource]
+    ):
+        alternatives += swap_alternatives(affected, fixed, res, outages, settings)
+        alternatives.sort(
+            key=lambda entry: (
+                -entry["recovered"],
+                entry["penalty"],
+                len(entry["changes"]),
+            )
+        )
+    if (
+        state.settings.get("demo_profile")
+        and affected
+        and alternatives
+        and alternatives[0]["recovered"] > 0
+    ):
+        class_free = {
+            "recovered": 0,
+            "unresolved": len(affected),
+            "rooms": 0,
+            "subs": 0,
+            "delay": 0,
+            "penalty": max(alternatives[0]["penalty"] + 100, 1000 * len(affected)),
+            "class_free": True,
+            "changes": [
+                {
+                    "id": s["id"],
+                    "day": s["day"],
+                    "subject": s["subject"],
+                    "cohort": s["cohort"],
+                    "before": {
+                        "start": s["start"],
+                        "faculty": s["faculty"],
+                        "room": s["room"],
+                    },
+                    "after": None,
+                }
+                for s in affected
+            ],
+        }
+        alternatives = [alternatives[0], class_free]
+    else:
+        alternatives = alternatives[:2]
     c.impact = {**impact, "solver_status": status}
     for i, data in enumerate(alternatives, 1):
         p = Plan(
@@ -102,7 +226,7 @@ def generate(db, c, state):
             rank=i,
             revision=state.revision,
             data=data,
-            status="Pending" if data["recovered"] else "Escalated",
+            status="Pending" if (data["recovered"] or data.get("class_free")) else "Escalated",
         )
         db.add(p)
         plans.append(p)
@@ -120,7 +244,7 @@ def generate(db, c, state):
             reviewers(db, c),
             c.title,
             c.status + " · " + str(len(affected)) + " affected sessions",
-            "/recovery",
+            f"/recovery?case={c.id}",
         )
     return plans
 
@@ -187,11 +311,19 @@ def report(db, u, data, simulation=False):
         )
     if not simulation:
         db.add(Audit(actor=u.name, action="Reported " + c.title, case_id=c.id))
+        if any(res[id]["kind"] != "Faculty" for id in c.roots):
+            notify(
+                db,
+                db.query(User).filter(User.role == "Operator", User.id != u.id),
+                "Infrastructure issue",
+                f"{c.title} · {c.day}",
+                f"/incidents?day={c.day}",
+            )
     return c
 
 
 def apply_plan(db, p, c, state, actor):
-    if c.simulation or p.status != "Pending" or p.data["recovered"] == 0:
+    if c.simulation or p.status != "Pending":
         raise HTTPException(409, "This plan cannot be applied.")
     if state.settings.get("require_consent"):
         substitutes = {
@@ -209,41 +341,82 @@ def apply_plan(db, p, c, state, actor):
             )
     impact, affected, fixed, res, outages = context(db, c)
     changes = p.data["changes"]
-    if not validate(affected, fixed, changes, res, outages, state.settings):
+    settings = {**state.settings, "recovery_days": tuple(outages)}
+    if p.data.get("class_free"):
+        valid = all(ch["after"] is None for ch in changes)
+    elif p.data.get("swap"):
+        valid = any(
+            changes == option["changes"]
+            for option in swap_alternatives(affected, fixed, res, outages, settings)
+        )
+    else:
+        valid = validate(affected, fixed, changes, res, outages, settings)
+    if not valid:
         raise HTTPException(
             409, "Plan failed current schedule validation. Generate fresh alternatives."
         )
+    from .accounts import student_attends
+
+    students = db.query(User).filter_by(role="Student").all()
+    profiles = {student.id: db.get(Account, student.id) for student in students}
+    registrations = {}
+    for row in rows(db, Enrollment):
+        registrations.setdefault(row.student_id, set()).add(row.subject)
     for change in changes:
         lesson = db.get(Lesson, change["id"])
         target = change["after"]
+        original_day = lesson.day
         lesson.previous = change["before"]
+        if target and "day" in target:
+            lesson.previous = {**lesson.previous, "day": original_day}
         if target:
             for k, v in target.items():
                 setattr(lesson, k, v)
             lesson.status = "Recovered"
         else:
             lesson.status = "Unresolved"
-        recipients = [
-            u
-            for u in rows(db, User)
-            if u.resource
-            and u.resource
-            in {lesson.faculty, change["before"]["faculty"], lesson.cohort}
-        ]
+        recipients = (
+            db.query(User)
+            .filter(
+                User.role == "Faculty",
+                User.resource.in_({lesson.faculty, change["before"]["faculty"]}),
+            )
+            .all()
+        )
+        recipients.extend(
+            student
+            for student in students
+            if student_attends(
+                student,
+                fields(lesson, LESSON_FIELDS),
+                res,
+                profiles[student.id],
+                registrations.get(student.id, ()),
+            )
+        )
 
         def description(slot):
             h, m = divmod(slot["start"], 60)
             return f"{h:02}:{m:02}, {res[slot['room']]['name']}, {res[slot['faculty']]['name']}"
 
         message = (
-            lesson.day
+            original_day
             + " · "
             + description(change["before"])
             + " → "
-            + (description(target) if target else "Awaiting a new assignment")
+            + (
+                (lesson.day + " · " if lesson.day != original_day else "")
+                + description(target)
+                if target
+                else "Class canceled (free period — no teacher available)"
+            )
         )
         notify(
-            db, recipients, lesson.subject + " timetable update", message, "/timetable"
+            db,
+            recipients,
+            lesson.subject + (" timetable update" if target else " class canceled"),
+            message,
+            f"/timetable?day={lesson.day}&session={lesson.id}",
         )
     state.version += 1
     p.status = "Applied"
@@ -257,7 +430,7 @@ def apply_plan(db, p, c, state, actor):
         reviewers(db, c),
         "Recovery applied",
         f"{c.title} · Timetable v{state.version}",
-        "/recovery",
+        f"/recovery?case={c.id}",
     )
     db.add(
         Audit(

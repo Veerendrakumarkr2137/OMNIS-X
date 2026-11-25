@@ -45,7 +45,14 @@ export function PlanComparison({
   const canApprove =
     c.user.role === "Admin" || (c.user.role === "HOD" && c.dash.hod_approval);
   const display = (s: Slot) =>
-    time(s.start) + " · " + c.name(s.faculty) + " · " + c.name(s.room);
+    (s.day ? pretty(s.day) + " · " : "") +
+    time(s.start) +
+    " · " +
+    c.name(s.faculty) +
+    " · " +
+    c.name(s.room);
+  const subjectsOf = (id: string) =>
+    c.resources.find((r) => r.id === id)?.details?.subjects || [];
   async function act(id: number, action: string) {
     if (busy) return;
     setBusy(true);
@@ -99,12 +106,12 @@ export function PlanComparison({
           <b>
             {ch.subject} · {c.name(ch.cohort)}
           </b>
-          <small>Original · {display(ch.before)}</small>
+          <small>Original · {display({ ...ch.before, day: ch.day })}</small>
           <small>
             Proposed ·{" "}
             {ch.after
-              ? display(ch.after)
-              : "Unresolved — manual placement needed"}
+              ? display({ ...ch.after, day: ch.after.day || ch.day })
+              : "No one available · Class free (notify students)"}
           </small>
         </div>
       ))}
@@ -189,6 +196,52 @@ export function PlanComparison({
                 </div>
               ))}
             </dl>
+            {p.data.changes.length > 0 && (
+              <div className="changes">
+                {p.data.changes.map((ch) => {
+                  const sameFaculty =
+                    !!ch.after && ch.after.faculty === ch.before.faculty;
+                  const diffSub =
+                    ch.after && !sameFaculty
+                      ? subjectsOf(ch.after.faculty).find(
+                          (s) => s !== ch.subject,
+                        )
+                      : undefined;
+                  return (
+                    <div key={ch.id}>
+                      <b>
+                        {ch.subject} · {c.name(ch.cohort)}
+                      </b>
+                      <small>
+                        Taking this subject · {c.name(ch.before.faculty)}
+                        {sameFaculty ? " · continues" : ""}
+                      </small>
+                      {ch.after ? (
+                        <>
+                          {!sameFaculty && (
+                            <small>
+                              Handling faculty · {c.name(ch.after.faculty)}
+                              {diffSub ? ` (${diffSub})` : ""}
+                            </small>
+                          )}
+                          <small>
+                            {c.name(ch.after.room)}
+                            {ch.after.room === ch.before.room
+                              ? " (same class)"
+                              : ""}{" "}
+                            · {time(ch.after.start)}
+                          </small>
+                        </>
+                      ) : (
+                        <small>
+                          No one available · Class free (notify students)
+                        </small>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <Pill tone={p.status === "Pending" ? "amber" : "neutral"}>
               {p.status}
             </Pill>

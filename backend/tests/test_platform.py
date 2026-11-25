@@ -11,7 +11,9 @@ from app.services import lessons
 
 @pytest.fixture
 def campus(tmp_path):
-    app = create_app("sqlite:///" + (tmp_path / "campus.db").as_posix(), True)
+    app = create_app(
+        "sqlite:///" + (tmp_path / "campus.db").as_posix(), True, dataset="meridian"
+    )
     with TestClient(app) as client:
         yield client, app
 
@@ -55,6 +57,12 @@ def test_recovery_cycle(campus):
     c, app = campus
     case = absent(c)
     assert len(case["impact"]["sessions"]) == 2 and case["impact"]["students"] == 60
+    as_role(c, "student")
+    student_schedule = c.get("/api/timetable").json()
+    dashboard = c.get("/api/dashboard").json()
+    assert set(dashboard["disrupted_sessions"]) == {student_schedule[0]["id"]}
+    assert "outage_resources" not in dashboard
+    assert "Private leave reason" not in str(dashboard)
     as_role(c, "admin")
     before = c.get("/api/timetable").json()
     plans = c.get("/api/recovery/plans", params={"case_id": case["id"]}).json()
@@ -83,6 +91,7 @@ def test_recovery_cycle(campus):
     assert c.get("/api/audit").json()[0]["actor"] == "Alex Morgan"
     as_role(c, "student")
     assert all(s["cohort"] == "c00" for s in c.get("/api/timetable/me").json())
+    assert not c.get("/api/dashboard").json()["disrupted_sessions"]
     notices = c.get("/api/notifications").json()
     assert "Algorithms" in notices[0]["title"] and "Private leave reason" not in str(
         notices
@@ -115,6 +124,7 @@ def test_department_isolation(campus):
     assert c.get("/api/incidents/1").status_code == 404
     assert c.get("/api/recovery/plans").json() == []
     assert all(r["dept"] == "CSE" for r in c.get("/api/resources").json())
+    assert c.get("/api/dashboard").json()["outage_resources"] == {}
 
 
 def test_simulated_multi_failure(campus):
@@ -122,6 +132,7 @@ def test_simulated_multi_failure(campus):
     as_role(c, "operator")
     state = c.get("/api/timetable/version").json()
     schedule = c.get("/api/timetable").json()
+    dashboard = c.get("/api/dashboard").json()
     result = c.post(
         "/api/simulations",
         json={
@@ -137,6 +148,7 @@ def test_simulated_multi_failure(campus):
     assert case["impact"]["depths"]["l0"] == 2 and case["impact"]["depths"]["f00"] == 0
     assert c.get("/api/timetable").json() == schedule
     assert c.get("/api/timetable/version").json() == state
+    assert c.get("/api/dashboard").json() == dashboard
     as_role(c, "admin")
     p = c.get("/api/recovery/plans", params={"case_id": case["id"]}).json()[0]
     assert c.post(f"/api/recovery/plans/{p['id']}/apply").status_code == 409
@@ -225,9 +237,9 @@ def test_manual_policy(campus):
 
 def test_persistence_after_restart(tmp_path):
     url = "sqlite:///" + (tmp_path / "restart.db").as_posix()
-    with TestClient(create_app(url, True)) as c:
+    with TestClient(create_app(url, True, dataset="meridian")) as c:
         case = absent(c)
-    with TestClient(create_app(url, True)) as c:
+    with TestClient(create_app(url, True, dataset="meridian")) as c:
         as_role(c, "admin")
         assert (
             c.get(f"/api/incidents/{case['id']}").json()["reason"]

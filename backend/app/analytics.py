@@ -1,16 +1,35 @@
 import networkx as nx
+from .engine.graph import cohort_size, overlaps
 from .engine.validation import compatible, workload
 
 
-def risks_and_score(resources, sessions, cases, g):
+def has_assignment_outage(session, cases):
+    return any(
+        overlaps(
+            session["start"],
+            session["start"] + session["duration"],
+            case.start,
+            case.end,
+        )
+        and (
+            session["faculty"] in case.impact["depths"]
+            or session["room"] in case.impact["depths"]
+        )
+        for case in cases
+    )
+
+
+def risks_and_score(resources, sessions, cases, g, *, selected_day=False, disrupted=()):
     risks = []
     faculty = [r for r in resources.values() if r["kind"] == "Faculty"]
     rooms = [r for r in resources.values() if r["kind"] in ("Laboratory", "Classroom")]
     active = [s for s in sessions if s["status"] != "Unresolved"]
-    violations = set()
+    violations = set(disrupted)
+    if selected_day:
+        violations.update(s["id"] for s in sessions if s["status"] == "Unresolved")
     redundant, coverage = 0, 0
     for s in active:
-        size = resources[s["cohort"]]["details"]["size"]
+        size = cohort_size(s["cohort"], resources)
         suitable = [
             r
             for r in rooms
@@ -70,8 +89,14 @@ def risks_and_score(resources, sessions, cases, g):
         if c.status in ("Recovered", "Partial recovery", "Needs intervention")
     ]
     n = len(active)
+    scheduled = len(sessions) if selected_day else n
     power_sources = {r["id"] for r in resources.values() if r["kind"] == "Power"}
-    modeled = [nx.ancestors(g, r["id"]) & power_sources for r in rooms]
+    used_rooms = {s["room"] for s in active}
+    modeled = [
+        nx.ancestors(g, r["id"]) & power_sources
+        for r in rooms
+        if not selected_day or r["id"] in used_rooms
+    ]
     powered = [sources for sources in modeled if sources]
     for power in sorted(power_sources):
         dependent = sum(sources == {power} for sources in powered)
@@ -87,7 +112,9 @@ def risks_and_score(resources, sessions, cases, g):
     factors = {
         "Room redundancy": round(100 * redundant / n) if n else None,
         "Qualified backup": round(100 * coverage / n) if n else None,
-        "Schedule compliance": round(100 * (1 - len(violations) / n)) if n else None,
+        "Schedule compliance": round(100 * (1 - len(violations) / scheduled))
+        if scheduled
+        else None,
         "Recovery success": round(
             100 * sum(c.status == "Recovered" for c in settled) / len(settled)
         )
