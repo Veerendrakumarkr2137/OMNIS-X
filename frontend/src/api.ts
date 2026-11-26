@@ -1,5 +1,12 @@
 import axios from "axios";
-export const api = axios.create({ baseURL: "/api", timeout: 45000 });
+// A sleeping Render service can take more than 50 seconds to wake.
+export const api = axios.create({ baseURL: "/api", timeout: 120000 });
+
+export function isTransientConnectionError(e: unknown): boolean {
+  if (!axios.isAxiosError(e) || axios.isCancel(e)) return false;
+  const status = e.response?.status;
+  return status === undefined || [502, 503, 504].includes(status);
+}
 export const get = async <T>(path: string): Promise<T> =>
   (await api.get(path)).data;
 export function errorText(e: unknown) {
@@ -7,7 +14,8 @@ export function errorText(e: unknown) {
     const d = e.response?.data?.detail;
     if (typeof d === "string") return d;
     if (Array.isArray(d)) return d.map((x) => x.msg).join(". ");
-    if (!e.response) return "The campus server is unavailable. Try again.";
+    if (isTransientConnectionError(e))
+      return "The campus server may still be starting. Please retry the connection.";
   }
   return "The request could not be completed.";
 }
