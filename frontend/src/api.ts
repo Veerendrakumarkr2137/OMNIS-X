@@ -1,5 +1,9 @@
 import axios from "axios";
-export const api = axios.create({ baseURL: "/api", timeout: 45000 });
+export const isDemoWorkspace = /^\/demo(?:\/|$)/.test(window.location.pathname);
+export const api = axios.create({
+  baseURL: isDemoWorkspace ? "/demo/api" : "/api",
+  timeout: 45000,
+});
 export const get = async <T>(path: string): Promise<T> =>
   (await api.get(path)).data;
 export function errorText(e: unknown) {
