@@ -42,7 +42,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { api, errorText, get } from "./api";
+import { api, errorText, get, isTransientConnectionError } from "./api";
 import { Brand, Modal } from "./ui";
 import { Login } from "./Login";
 const DashboardPage = React.lazy(() =>
@@ -247,6 +247,9 @@ function Root() {
       }
     },
     staleTime: Infinity,
+    retry: (failureCount, error) =>
+      failureCount < 2 && isTransientConnectionError(error),
+    retryDelay: (attempt) => Math.min(2000 * 2 ** attempt, 8000),
   });
   useEffect(() => {
     const id = api.interceptors.response.use(
@@ -265,11 +268,12 @@ function Root() {
     );
     return () => api.interceptors.response.eject(id);
   }, [cache, nav]);
-  if (me.isPending)
+  if (me.isPending || (me.isError && me.isFetching))
     return (
-      <div className="loading">
+      <div className="loading" role="status" aria-live="polite">
         <Brand />
-        Connecting to campus…
+        <p>Connecting to campus…</p>
+        <p>The campus server may be waking up. This can take a minute or more.</p>
       </div>
     );
   if (me.isError)
