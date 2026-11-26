@@ -205,7 +205,12 @@ def database_engine(url=None, filename="omnis.db"):
             import certifi
 
             args["sslmode"] = mode
-            args["sslrootcert"] = target.query.get("sslrootcert") or certifi.where()
+            # Supabase database certificates may use its private root CA.
+            # Keep verification enabled and honor an explicitly supplied CA.
+            bundled_ca = Path(__file__).with_name("prod-ca-2021.crt")
+            args["sslrootcert"] = target.query.get("sslrootcert") or (
+                str(bundled_ca) if bundled_ca.is_file() else certifi.where()
+            )
             if target.port == 6543:
                 args["prepare_threshold"] = None
         return create_engine(
