@@ -16,7 +16,7 @@ import {
   LockKeyhole,
 } from "lucide-react";
 import { z } from "zod";
-import { api, errorText, get } from "./api";
+import { api, errorText, get, isDemoWorkspace } from "./api";
 import { Brand, CampusArt } from "./ui";
 import type { User } from "./types";
 const demoRoles = [
@@ -40,7 +40,7 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
   const selectedPortal = demoRoles.find(
     ([role]) => role.toLowerCase() === params.get("access"),
   )?.[0];
-  const [config, setConfig] = useState({ demo: false, batch_demo: false }),
+  const [config, setConfig] = useState({ demo: false, batch_demo: false, quick_demo: false }),
     [shown, setShown] = useState(false),
     [loading, setLoading] = useState(""),
     [error, setError] = useState("");
@@ -87,6 +87,23 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
     } catch (e) {
       setError(errorText(e));
     } finally {
+      setLoading("");
+    }
+  }
+  async function quickEnter(role: User["role"]) {
+    if (loading || !config.quick_demo) return;
+    setLoading(role);
+    setError("");
+    try {
+      await api.post<User>("/auth/login", {
+        username: role.toLowerCase(),
+        password: role[0] + role.toLowerCase().slice(1) + "@123",
+        remember: false,
+        portal: role,
+      }, { baseURL: "/demo/api" });
+      window.location.assign("/demo/");
+    } catch (e) {
+      setError(errorText(e));
       setLoading("");
     }
   }
@@ -192,6 +209,20 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
               <ArrowRight size={16} />
             </button>
           </form>
+          {!config.demo && config.quick_demo && (
+            <div className="demo-area">
+              <div className="demo-title"><span>QUICK DEMO ACCESS</span><div /></div>
+              <p>Explore a fictional campus. No institutional credentials needed.</p>
+              <div className="demo-grid">
+                {demoRoles.map(([role, Icon]) => (
+                  <button key={role} disabled={!!loading} onClick={() => quickEnter(role)}>
+                    <Icon size={16} /> {accessLabels[role]} <ArrowUpRight size={12} />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {isDemoWorkspace && <p><a href="/">Return to institutional sign-in</a></p>}
           {config.demo && (
             <div className="demo-area">
               <div className="demo-title">
