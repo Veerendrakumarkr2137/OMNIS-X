@@ -17,6 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.engine import make_url
+from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
 
 
@@ -250,12 +251,22 @@ def database_engine(url=None, filename="omnis.db"):
             args["sslrootcert"] = target.query.get("sslrootcert") or supabase_ca_bundle()
             if target.port == 6543:
                 args["prepare_threshold"] = None
+        # Serverless workers must not reserve scarce Supavisor sessions
+        # between requests. The transaction pooler already provides pooling.
+        pool_options = (
+            {"poolclass": NullPool}
+            if os.getenv("VERCEL") == "1"
+            or (
+                target.host
+                and target.host.endswith(".pooler.supabase.com")
+                and target.port == 6543
+            )
+            else {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 2}
+        )
         return create_engine(
             target.set(drivername="postgresql+psycopg"),
             connect_args=args,
-            pool_pre_ping=True,
-            pool_size=5,
-            max_overflow=2,
+            **pool_options,
             execution_options={"schema_translate_map": {None: POSTGRES_SCHEMA}},
         )
     if target.get_backend_name() != "sqlite":
