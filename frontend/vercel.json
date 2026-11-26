@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/demo/api/:path*",
+      "destination": "https://omnis-x-backend.onrender.com/demo/api/:path*"
+    },
+    {
       "source": "/api/:path*",
       "destination": "https://omnis-x-backend.onrender.com/api/:path*"
     },
