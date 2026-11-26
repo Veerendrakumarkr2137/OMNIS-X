@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 676 44" width="676" height="44" role="img" aria-labelledby="stack-title">
+  <title id="stack-title">React, FastAPI, Supabase, and OR-Tools</title>
+  <g font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700">
+    <rect x="1" y="2" width="162" height="40" rx="12" fill="#35307b"/>
+    <ellipse cx="24" cy="22" rx="10" ry="4" fill="none" stroke="#c2baff" stroke-width="1.3"/>
+    <ellipse cx="24" cy="22" rx="10" ry="4" fill="none" stroke="#c2baff" stroke-width="1.3" transform="rotate(60 24 22)"/>
+    <ellipse cx="24" cy="22" rx="10" ry="4" fill="none" stroke="#c2baff" stroke-width="1.3" transform="rotate(120 24 22)"/>
+    <circle cx="24" cy="22" r="1.8" fill="#e3dcff"/>
+    <text x="44" y="27" fill="#f4f0ff">React</text>
+
+    <rect x="171" y="2" width="162" height="40" rx="12" fill="#124a69"/>
+    <path d="M197 12L185 24H192L190 32L203 19H196Z" fill="#a9e8ff" stroke="#a9e8ff" stroke-width="1" stroke-linejoin="round"/>
+    <text x="214" y="27" fill="#ebf9ff">FastAPI</text>
+
+    <rect x="341" y="2" width="162" height="40" rx="12" fill="#145941"/>
+    <path d="M354 17C354 14 369 14 369 17V28C369 31 354 31 354 28ZM354 17C354 20 369 20 369 17M354 23C354 26 369 26 369 23" fill="none" stroke="#abf5d1" stroke-width="1.4"/>
+    <text x="384" y="27" fill="#effff6">Supabase</text>
+
+    <rect x="511" y="2" width="164" height="40" rx="12" fill="#74452b"/>
+    <path d="M528 17L541 22L528 27V17ZM528 17V13M541 22H545M528 27V31" fill="none" stroke="#ffd7a6" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="528" cy="12" r="2" fill="#ffd7a6"/>
+    <circle cx="546" cy="22" r="2" fill="#ffd7a6"/>
+    <circle cx="528" cy="32" r="2" fill="#ffd7a6"/>
+    <text x="554" y="27" fill="#fff3e3">OR-Tools</text>
+  </g>
+</svg>

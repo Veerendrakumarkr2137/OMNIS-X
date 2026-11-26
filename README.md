@@ -1,10 +1,22 @@
-# OMNIS-X
+<h1 align="center">
+  <img src="docs/assets/omnis-x-banner.svg" alt="OMNIS-X — Institutional digital twin and timetable recovery" width="1200">
+</h1>
+
+<p align="center">
+  <img src="docs/assets/omnis-x-stack.svg" alt="React, FastAPI, Supabase, and OR-Tools" width="676">
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
+  <a href="docs/api.md">API reference</a> ·
+  <a href="docs/demo-guide.md">Demo walkthrough</a> ·
+  <a href="docs/verification.md">Verification</a>
+</p>
 
 OMNIS-X is an institutional digital twin and recovery portal for colleges. It connects published timetables, teaching resources and campus disruptions so staff can compare recovery plans and students can see changes that affect their own classes.
 
 The portal runs locally with SQLite or uses Supabase PostgreSQL through a FastAPI backend. The IIET demo includes section and batch timetables, faculty assignments and sample outages for trying the recovery workflow.
-
-[Architecture](docs/architecture.md) · [API reference](docs/api.md) · [Demo walkthrough](docs/demo-guide.md) · [Verification](docs/verification.md)
 
 ## Features
 
@@ -120,6 +132,26 @@ For an empty project, generate the operational SQL with `python scripts/supabase
 | [optimizer.py](backend/app/engine/optimizer.py) and [validation.py](backend/app/engine/validation.py) | Scheduling search, ranking and independent validation |
 
 ## Application flow
+
+```mermaid
+flowchart LR
+    R["Report disruption"] --> I["Trace impact"] --> P["Compare recovery plans"]
+    P --> V["Review and validate"] --> U["Publish timetable"]
+    P --> S["Show simulation results"]
+
+    classDef report fill:#4338a5,color:#fff,stroke:#a5b4fc
+    classDef impact fill:#155e9d,color:#fff,stroke:#7dd3fc
+    classDef plans fill:#15766a,color:#fff,stroke:#6ee7b7
+    classDef review fill:#824720,color:#fff,stroke:#fdba74
+    classDef publish fill:#246747,color:#fff,stroke:#86efac
+    classDef scenario fill:#694598,color:#fff,stroke:#d8b4fe
+    class R report
+    class I impact
+    class P plans
+    class V review
+    class U publish
+    class S scenario
+```
 
 1. FastAPI opens the configured database and initializes its seed state when needed.
 2. The React workspace signs in through FastAPI. The server scopes sessions, resources and actions to the account's role.
