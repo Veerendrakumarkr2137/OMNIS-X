@@ -2,6 +2,7 @@ from datetime import date, timedelta
 import os
 import secrets
 from argon2 import PasswordHasher
+from sqlalchemy import func, text
 from .iiet import B2, metadata as iiet_metadata, seed_all_sections, seed_timetable
 from .database import (
     Account,
@@ -29,8 +30,42 @@ SUBJECTS = [
 ]
 
 
+def ensure_production_admin(db):
+    """Bootstrap a real admin once, without altering any existing account."""
+    if db.query(User).filter(User.role == "Admin", User.demo.is_(False)).first():
+        return
+    username = os.environ.get("OMNIS_ADMIN", "").strip()
+    password = os.environ.get("OMNIS_ADMIN_PASSWORD", "")
+    if not username or len(password) < 12:
+        raise RuntimeError(
+            "Initial setup requires OMNIS_ADMIN and OMNIS_ADMIN_PASSWORD (12+ characters)."
+        )
+    if "@" in username:
+        raise RuntimeError("OMNIS_ADMIN must be a login ID, not an email address.")
+    if db.query(User).filter(func.lower(User.id) == username.lower()).first():
+        raise RuntimeError(
+            "OMNIS_ADMIN is already registered. Choose a distinct production admin login."
+        )
+    db.add(
+        User(
+            id=username,
+            name=username,
+            role="Admin",
+            password_hash=HASH.hash(password),
+            demo=False,
+        )
+    )
+
+
 def seed(db, demo=True, dataset="meridian"):
-    if db.get(State, 1):
+    if not demo and db.get_bind().dialect.name == "postgresql":
+        # Serialize cold-start bootstrapping, including an entirely empty database.
+        db.execute(text("SELECT pg_advisory_xact_lock(1876453912)"))
+    state = db.query(State).filter_by(id=1).with_for_update().one_or_none()
+    if state is not None:
+        if not demo:
+            ensure_production_admin(db)
+            db.commit()
         return
     anchor = date.fromisoformat(os.getenv("OMNIS_DEMO_DATE", date.today().isoformat()))
     iiet = demo and dataset == "iiet"
@@ -61,22 +96,7 @@ def seed(db, demo=True, dataset="meridian"):
     )
     db.add(state)
     if not demo:
-        username, password = (
-            os.environ.get("OMNIS_ADMIN"),
-            os.environ.get("OMNIS_ADMIN_PASSWORD", ""),
-        )
-        if not username or len(password) < 12:
-            raise RuntimeError(
-                "Initial setup requires OMNIS_ADMIN and OMNIS_ADMIN_PASSWORD (12+ characters)."
-            )
-        db.add(
-            User(
-                id=username,
-                name=username,
-                role="Admin",
-                password_hash=HASH.hash(password),
-            )
-        )
+        ensure_production_admin(db)
         db.commit()
         return
 
