@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://omnis-x-backend.vercel.app/api/:path*"
+      "destination": "https://omnis-x-backend.onrender.com/api/:path*"
     },
     {
       "source": "/(.*)",
