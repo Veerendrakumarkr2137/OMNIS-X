@@ -42,7 +42,7 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { api, errorText, get, isTransientConnectionError } from "./api";
+import { api, errorText, get, isTransientConnectionError, isDemoWorkspace } from "./api";
 import { Brand, Modal } from "./ui";
 import { Login } from "./Login";
 const DashboardPage = React.lazy(() =>
@@ -791,7 +791,7 @@ function Workspace({
 }
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={isDemoWorkspace ? "/demo" : "/"}>
       <QueryClientProvider client={client}>
         <Root />
         <Toaster position="bottom-right" richColors />
