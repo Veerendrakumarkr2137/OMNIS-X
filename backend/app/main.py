@@ -80,6 +80,19 @@ from .services import (
 
 def create_app(url=None, demo=None, dataset=None):
     demo = os.getenv("OMNIS_DEMO", "1") == "1" if demo is None else demo
+    hosted_demo = os.getenv("OMNIS_HOSTED_DEMO", "0") == "1"
+    hosted = os.getenv("VERCEL") == "1" or hosted_demo
+    if hosted and demo and not hosted_demo:
+        raise RuntimeError("Hosted demo requires explicit OMNIS_HOSTED_DEMO=1.")
+    if hosted_demo:
+        if not demo:
+            raise RuntimeError("Hosted demo requires OMNIS_DEMO=1.")
+        url = os.getenv("OMNIS_DEMO_DATABASE_URL", "")
+        if not url.startswith(("postgresql://", "postgresql+psycopg://")):
+            raise RuntimeError("Set a dedicated PostgreSQL OMNIS_DEMO_DATABASE_URL.")
+        if url == os.getenv("DATABASE_URL"):
+            raise RuntimeError("Demo and production database URLs must be separate.")
+        dataset = "meridian"
     dataset = dataset or os.getenv("OMNIS_DEMO_DATASET", "iiet")
     if demo and dataset not in ("iiet", "meridian"):
         raise ValueError("OMNIS_DEMO_DATASET must be iiet or meridian.")
@@ -91,10 +104,11 @@ def create_app(url=None, demo=None, dataset=None):
         )
         with app.state.sessions() as db:
             fresh = db.get(State, 1) is None
-            seed(db, demo, dataset)
+            seed(db, demo, dataset, hosted_demo=hosted_demo)
             extend_demo_accounts(db, demo)
             app.state.batch_demo = seed_batch_demo(db, demo)
-            db.commit()
+            if not hosted_demo:
+                db.commit()
             if demo and fresh and dataset == "meridian":
                 day = db.get(State, 1).anchor
                 report(
@@ -141,17 +155,43 @@ def create_app(url=None, demo=None, dataset=None):
                     ),
                 )
                 db.commit()
+            if hosted_demo:
+                db.commit()
         yield
         app.state.sessions.kw["bind"].dispose()
 
     app = FastAPI(
         title="OMNIS-X · Institutional Recovery", version="1.0", lifespan=lifespan
     )
-    if demo:
-        app.add_middleware(
-            TrustedHostMiddleware,
-            allowed_hosts=["localhost", "127.0.0.1", "testserver", "[::1]"],
+    configured_origins = {
+        value.strip().rstrip("/")
+        for value in os.getenv("OMNIS_FRONTEND_ORIGINS", "").split(",")
+        if value.strip()
+    }
+    if any(
+        urlsplit(value).scheme != "https"
+        or not urlsplit(value).netloc
+        or urlsplit(value).path
+        or urlsplit(value).query
+        or urlsplit(value).fragment
+        or urlsplit(value).username
+        for value in configured_origins
+    ):
+        raise RuntimeError("OMNIS_FRONTEND_ORIGINS must contain exact HTTPS origins.")
+    if hosted_demo and not configured_origins:
+        raise RuntimeError("Hosted demo requires OMNIS_FRONTEND_ORIGINS.")
+    if demo or hosted:
+        allowed_hosts = ["localhost", "127.0.0.1", "testserver", "[::1]"]
+        allowed_hosts.extend(urlsplit(value).hostname for value in configured_origins)
+        allowed_hosts.extend(
+            host.strip() for host in os.getenv("OMNIS_ALLOWED_HOSTS", "").split(",")
+            if host.strip() and "*" not in host
         )
+        if os.getenv("VERCEL_URL"):
+            allowed_hosts.append(os.environ["VERCEL_URL"])
+        if os.getenv("VERCEL_PROJECT_PRODUCTION_URL"):
+            allowed_hosts.append(os.environ["VERCEL_PROJECT_PRODUCTION_URL"])
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
     @app.middleware("http")
     async def origin(request, call_next):
@@ -159,7 +199,10 @@ def create_app(url=None, demo=None, dataset=None):
         if (
             request.method not in ("GET", "HEAD", "OPTIONS")
             and source
-            and urlsplit(source).netloc != request.headers.get("host")
+            and (
+                source not in configured_origins
+                and urlsplit(source).netloc != request.headers.get("host")
+            )
         ):
             from starlette.responses import JSONResponse
 
@@ -234,7 +277,7 @@ def create_app(url=None, demo=None, dataset=None):
             "omnis_session",
             token,
             httponly=True,
-            secure=not demo,
+            secure=hosted or not demo,
             samesite="strict",
             max_age=ttl if data.remember else None,
         )
