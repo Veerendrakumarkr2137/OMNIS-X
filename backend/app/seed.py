@@ -57,16 +57,27 @@ def ensure_production_admin(db):
     )
 
 
-def seed(db, demo=True, dataset="meridian"):
-    if not demo and db.get_bind().dialect.name == "postgresql":
+def seed(db, demo=True, dataset="meridian", *, hosted_demo=False):
+    if (not demo or hosted_demo) and db.get_bind().dialect.name == "postgresql":
         # Serialize cold-start bootstrapping, including an entirely empty database.
         db.execute(text("SELECT pg_advisory_xact_lock(1876453912)"))
     state = db.query(State).filter_by(id=1).with_for_update().one_or_none()
     if state is not None:
+        isolated = state.settings.get("hosted_demo_isolated", False)
+        if hosted_demo and not isolated:
+            raise RuntimeError("Hosted demo requires a new, isolated demo database.")
+        if isolated and not hosted_demo:
+            raise RuntimeError("An isolated demo database must not be used for production.")
         if not demo:
             ensure_production_admin(db)
             db.commit()
         return
+    if hosted_demo and (
+        db.query(User).first() is not None
+        or db.query(Resource).first() is not None
+        or db.query(Lesson).first() is not None
+    ):
+        raise RuntimeError("Hosted demo database must be empty on first startup.")
     anchor = date.fromisoformat(os.getenv("OMNIS_DEMO_DATE", date.today().isoformat()))
     iiet = demo and dataset == "iiet"
     if iiet:
@@ -75,6 +86,7 @@ def seed(db, demo=True, dataset="meridian"):
         id=1,
         anchor=anchor.isoformat(),
         settings={
+            **({"hosted_demo_isolated": True} if hosted_demo else {}),
             **(
                 {
                     "demo_profile": iiet_metadata(),
@@ -105,7 +117,11 @@ def seed(db, demo=True, dataset="meridian"):
     else:
         seed_meridian(db, anchor)
     seed_accounts(db, iiet)
-    db.commit()
+    if hosted_demo:
+        # The application commits all first-start demo records as one transaction.
+        db.flush()
+    else:
+        db.commit()
 
 
 def seed_meridian(db, anchor):
