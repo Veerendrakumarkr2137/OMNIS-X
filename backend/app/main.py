@@ -1,8 +1,9 @@
 import hashlib
+import logging
 import os
 import secrets
 import time
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -10,6 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from .analytics import has_assignment_outage, risks_and_score
 from .admin import ProfileInput, IdentityInput, LessonInput, add_lesson, save_profile
@@ -78,10 +80,12 @@ from .services import (
 )
 
 
-def create_app(url=None, demo=None, dataset=None):
+def create_app(url=None, demo=None, dataset=None, *, demo_workspace=False):
     demo = os.getenv("OMNIS_DEMO", "1") == "1" if demo is None else demo
-    hosted_demo = os.getenv("OMNIS_HOSTED_DEMO", "0") == "1"
-    hosted = os.getenv("VERCEL") == "1" or hosted_demo
+    hosted_demo = demo_workspace or os.getenv("OMNIS_HOSTED_DEMO", "0") == "1"
+    cookie_name = "omnis_demo_session" if demo_workspace else "omnis_session"
+    cookie_path = "/demo/api" if demo_workspace else "/"
+    hosted = os.getenv("VERCEL") == "1" or bool(os.getenv("RENDER_EXTERNAL_HOSTNAME")) or hosted_demo
     if hosted and demo and not hosted_demo:
         raise RuntimeError("Hosted demo requires explicit OMNIS_HOSTED_DEMO=1.")
     if hosted_demo:
@@ -97,12 +101,22 @@ def create_app(url=None, demo=None, dataset=None):
     if demo and dataset not in ("iiet", "meridian"):
         raise ValueError("OMNIS_DEMO_DATASET must be iiet or meridian.")
 
+    demo_app = None
+
     @asynccontextmanager
     async def lifespan(app):
         app.state.sessions = factory(
-            url, "omnis-iiet.db" if demo and dataset == "iiet" else "omnis.db"
+            url, "omnis-iiet.db" if demo and dataset == "iiet" else "omnis.db",
+            schema="omnisx_demo" if demo_workspace else "omnisx",
         )
         with app.state.sessions() as db:
+            if demo_workspace:
+                safe = db.execute(text("""SELECT current_user = 'omnisx_demo_app'
+                    AND NOT has_schema_privilege(current_user, 'omnisx', 'USAGE')
+                    AND has_schema_privilege(current_user, 'omnisx_demo', 'USAGE')""")).scalar_one()
+                if not safe:
+                    raise RuntimeError("Quick demo requires the restricted demo role.")
+                db.execute(text("SELECT pg_advisory_xact_lock(1876453913)"))
             fresh = db.get(State, 1) is None
             seed(db, demo, dataset, hosted_demo=hosted_demo)
             extend_demo_accounts(db, demo)
@@ -157,8 +171,21 @@ def create_app(url=None, demo=None, dataset=None):
                 db.commit()
             if hosted_demo:
                 db.commit()
-        yield
-        app.state.sessions.kw["bind"].dispose()
+        app.state.quick_demo_ready = False
+        try:
+            async with AsyncExitStack() as stack:
+                if demo_app is not None:
+                    try:
+                        await stack.enter_async_context(demo_app.router.lifespan_context(demo_app))
+                        app.state.quick_demo_ready = True
+                    except Exception as exc:
+                        logging.getLogger(__name__).warning(
+                            "Quick demo startup unavailable (%s); production remains active.",
+                            type(exc).__name__,
+                        )
+                yield
+        finally:
+            app.state.sessions.kw["bind"].dispose()
 
     app = FastAPI(
         title="OMNIS-X · Institutional Recovery", version="1.0", lifespan=lifespan
@@ -187,6 +214,8 @@ def create_app(url=None, demo=None, dataset=None):
             host.strip() for host in os.getenv("OMNIS_ALLOWED_HOSTS", "").split(",")
             if host.strip() and "*" not in host
         )
+        if os.getenv("RENDER_EXTERNAL_HOSTNAME"):
+            allowed_hosts.append(os.environ["RENDER_EXTERNAL_HOSTNAME"])
         if os.getenv("VERCEL_URL"):
             allowed_hosts.append(os.environ["VERCEL_URL"])
         if os.getenv("VERCEL_PROJECT_PRODUCTION_URL"):
@@ -207,8 +236,13 @@ def create_app(url=None, demo=None, dataset=None):
             from starlette.responses import JSONResponse
 
             return JSONResponse({"detail": "Cross-origin write denied."}, 403)
+        if (not demo_workspace and request.url.path.startswith("/demo/api/")
+                and not getattr(app.state, "quick_demo_ready", False)):
+            from starlette.responses import JSONResponse
+
+            return JSONResponse({"detail": "Demo workspace is not available."}, 503)
         response = await call_next(request)
-        if request.url.path.startswith("/api/"):
+        if request.url.path.startswith(("/api/", "/demo/api/")):
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -227,7 +261,7 @@ def create_app(url=None, demo=None, dataset=None):
     database = Depends(session, scope="function")
 
     def auth(request: Request, db=database):
-        token = request.cookies.get("omnis_session", "")
+        token = request.cookies.get(cookie_name, "")
         login = db.get(Login, hashlib.sha256(token.encode()).hexdigest())
         if not login or login.expires <= time.time():
             raise HTTPException(401, "Sign in to your workspace.")
@@ -248,7 +282,28 @@ def create_app(url=None, demo=None, dataset=None):
 
     @app.get("/api/config")
     def config():
-        return {"demo": demo, "batch_demo": app.state.batch_demo}
+        result = {"demo": demo, "batch_demo": app.state.batch_demo}
+        if getattr(app.state, "quick_demo_ready", False):
+            result["quick_demo"] = True
+        return result
+
+    demo_identities = {"admin": "Admin", "hod": "HOD", "faculty": "Faculty", "student": "Student", "operator": "Operator"}
+
+    def issue_session(db, u, response, remember=False):
+        token = secrets.token_urlsafe(40)
+        ttl = 604800 if remember else 28800
+        db.add(Login(digest=hashlib.sha256(token.encode()).hexdigest(), user_id=u.id, expires=int(time.time()) + ttl))
+        response.set_cookie(cookie_name, token, path=cookie_path, httponly=True, secure=hosted or not demo, samesite="strict", max_age=ttl if remember else None)
+        return identity(db, u)
+
+    if demo_workspace:
+        @app.post("/api/auth/demo/{role}")
+        def quick_login(role: str, response: Response, db=database):
+            role = role.lower()
+            u = db.get(User, role) if role in demo_identities else None
+            if not u or not u.demo or u.role != demo_identities.get(role) or not active(db, u):
+                raise HTTPException(403, "Demo role unavailable.")
+            return issue_session(db, u, response)
 
     @app.post("/api/auth/login")
     def login(data: Credentials, response: Response, db=database):
@@ -264,34 +319,17 @@ def create_app(url=None, demo=None, dataset=None):
             raise HTTPException(
                 403, "This account belongs to a different Access portal."
             )
-        token = secrets.token_urlsafe(40)
-        ttl = 604800 if data.remember else 28800
-        db.add(
-            Login(
-                digest=hashlib.sha256(token.encode()).hexdigest(),
-                user_id=u.id,
-                expires=int(time.time()) + ttl,
-            )
-        )
-        response.set_cookie(
-            "omnis_session",
-            token,
-            httponly=True,
-            secure=hosted or not demo,
-            samesite="strict",
-            max_age=ttl if data.remember else None,
-        )
-        return identity(db, u)
+        return issue_session(db, u, response, data.remember)
 
     @app.post("/api/auth/logout")
     def logout(request: Request, response: Response, u=Depends(auth), db=database):
         db.delete(
             db.get(
                 Login,
-                hashlib.sha256(request.cookies["omnis_session"].encode()).hexdigest(),
+                hashlib.sha256(request.cookies[cookie_name].encode()).hexdigest(),
             )
         )
-        response.delete_cookie("omnis_session")
+        response.delete_cookie(cookie_name, path=cookie_path)
         return {"ok": True}
 
     @app.get("/api/auth/me")
@@ -302,10 +340,12 @@ def create_app(url=None, demo=None, dataset=None):
     def change_password(
         data: PasswordChange, response: Response, u=Depends(auth), db=database
     ):
+        if demo_workspace and u.id in demo_identities:
+            raise HTTPException(403, "Shared demo credentials cannot be changed.")
         if not verify_password(u, data.current_password):
             raise HTTPException(400, "Current password is incorrect.")
         reset_password(db, u, data.password)
-        response.delete_cookie("omnis_session")
+        response.delete_cookie(cookie_name, path=cookie_path)
         return {"ok": True}
 
     def timetable(db, u, day=None):
@@ -436,6 +476,8 @@ def create_app(url=None, demo=None, dataset=None):
         target = db.get(User, id)
         if not target:
             missing()
+        if demo_workspace and target.id in demo_identities:
+            raise HTTPException(403, "Shared demo identities cannot be changed.")
         return identity(db, update_user(db, u, target, data))
 
     @app.post("/api/users/{id}/password")
@@ -445,6 +487,8 @@ def create_app(url=None, demo=None, dataset=None):
         target = db.get(User, id)
         if not target:
             missing()
+        if demo_workspace and target.id in demo_identities:
+            raise HTTPException(403, "Shared demo credentials cannot be changed.")
         reset_password(db, target, data.password)
         db.add(Audit(actor=u.name, action=f"Reset credentials for {target.id}"))
         return {"ok": True}
@@ -1112,6 +1156,17 @@ def create_app(url=None, demo=None, dataset=None):
             risk, factors, score = risks_and_score(res, schedule, cs, graph(db))
             result.update(risks=risk, factors=factors, score=score)
         return result
+
+    if not demo and not demo_workspace and os.getenv("OMNIS_QUICK_DEMO") == "1":
+        try:
+            demo_app = create_app(demo=True, demo_workspace=True)
+        except (RuntimeError, ValueError) as exc:
+            logging.getLogger(__name__).warning(
+                "Quick demo configuration unavailable (%s); production remains active.",
+                type(exc).__name__,
+            )
+        if demo_app is not None:
+            app.mount("/demo", demo_app, name="isolated-demo")
 
     dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
     if (dist / "index.html").is_file() and (dist / "assets").is_dir():
