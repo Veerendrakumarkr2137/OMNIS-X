@@ -234,7 +234,9 @@ def supabase_ca_bundle():
     return bundle.name
 
 
-def database_engine(url=None, filename="omnis.db"):
+def database_engine(url=None, filename="omnis.db", *, schema=POSTGRES_SCHEMA):
+    if schema not in (POSTGRES_SCHEMA, "omnisx_demo"):
+        raise ValueError("Unsupported database schema.")
     path = Path(__file__).resolve().parents[1] / filename
     target = make_url(
         url or os.getenv("DATABASE_URL") or f"sqlite:///{path.as_posix()}"
@@ -267,7 +269,7 @@ def database_engine(url=None, filename="omnis.db"):
             target.set(drivername="postgresql+psycopg"),
             connect_args=args,
             **pool_options,
-            execution_options={"schema_translate_map": {None: POSTGRES_SCHEMA}},
+            execution_options={"schema_translate_map": {None: schema}},
         )
     if target.get_backend_name() != "sqlite":
         raise ValueError("Use a SQLite or PostgreSQL DATABASE_URL.")
@@ -283,8 +285,8 @@ def database_engine(url=None, filename="omnis.db"):
     return engine
 
 
-def factory(url=None, filename="omnis.db"):
-    engine = database_engine(url, filename)
+def factory(url=None, filename="omnis.db", *, schema=POSTGRES_SCHEMA):
+    engine = database_engine(url, filename, schema=schema)
     if engine.dialect.name == "sqlite":
         Base.metadata.create_all(engine)
         with engine.begin() as connection:
