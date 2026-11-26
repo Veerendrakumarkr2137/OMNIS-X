@@ -1,6 +1,8 @@
 """Persistent campus records. All official mutations share a versioned state row."""
 
 import os
+import tempfile
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy import (
@@ -189,6 +191,48 @@ class State(Base):
     anchor = Column(String, nullable=False)
 
 
+# Public CA from the Supabase project's SSL configuration. Embed it so the
+# serverless runtime cannot omit the certificate during packaging.
+SUPABASE_ROOT_CA = """-----BEGIN CERTIFICATE-----
+MIIDxDCCAqygAwIBAgIUbLxMod62P2ktCiAkxnKJwtE9VPYwDQYJKoZIhvcNAQEL
+BQAwazELMAkGA1UEBhMCVVMxEDAOBgNVBAgMB0RlbHdhcmUxEzARBgNVBAcMCk5l
+dyBDYXN0bGUxFTATBgNVBAoMDFN1cGFiYXNlIEluYzEeMBwGA1UEAwwVU3VwYWJh
+c2UgUm9vdCAyMDIxIENBMB4XDTIxMDQyODEwNTY1M1oXDTMxMDQyNjEwNTY1M1ow
+azELMAkGA1UEBhMCVVMxEDAOBgNVBAgMB0RlbHdhcmUxEzARBgNVBAcMCk5ldyBD
+YXN0bGUxFTATBgNVBAoMDFN1cGFiYXNlIEluYzEeMBwGA1UEAwwVU3VwYWJhc2Ug
+Um9vdCAyMDIxIENBMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqQXW
+QyHOB+qR2GJobCq/CBmQ40G0oDmCC3mzVnn8sv4XNeWtE5XcEL0uVih7Jo4Dkx1Q
+DmGHBH1zDfgs2qXiLb6xpw/CKQPypZW1JssOTMIfQppNQ87K75Ya0p25Y3ePS2t2
+GtvHxNjUV6kjOZjEn2yWEcBdpOVCUYBVFBNMB4YBHkNRDa/+S4uywAoaTWnCJLUi
+cvTlHmMw6xSQQn1UfRQHk50DMCEJ7Cy1RxrZJrkXXRP3LqQL2ijJ6F4yMfh+Gyb4
+O4XajoVj/+R4GwywKYrrS8PrSNtwxr5StlQO8zIQUSMiq26wM8mgELFlS/32Uclt
+NaQ1xBRizkzpZct9DwIDAQABo2AwXjALBgNVHQ8EBAMCAQYwHQYDVR0OBBYEFKjX
+uXY32CztkhImng4yJNUtaUYsMB8GA1UdIwQYMBaAFKjXuXY32CztkhImng4yJNUt
+aUYsMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAB8spzNn+4VU
+tVxbdMaX+39Z50sc7uATmus16jmmHjhIHz+l/9GlJ5KqAMOx26mPZgfzG7oneL2b
+VW+WgYUkTT3XEPFWnTp2RJwQao8/tYPXWEJDc0WVQHrpmnWOFKU/d3MqBgBm5y+6
+jB81TU/RG2rVerPDWP+1MMcNNy0491CTL5XQZ7JfDJJ9CCmXSdtTl4uUQnSuv/Qx
+Cea13BX2ZgJc7Au30vihLhub52De4P/4gonKsNHYdbWjg7OWKwNv/zitGDVDB9Y2
+CMTyZKG3XEu5Ghl1LEnI3QmEKsqaCLv12BnVjbkSeZsMnevJPs1Ye6TjjJwdik5P
+o/bKiIz+Fq8=
+-----END CERTIFICATE-----
+"""
+
+
+@lru_cache(maxsize=1)
+def supabase_ca_bundle():
+    """Use public trust roots plus the Supabase root without disabling TLS checks."""
+    import certifi
+
+    with tempfile.NamedTemporaryFile(
+        mode="wb", prefix="omnisx-ca-", suffix=".pem", delete=False
+    ) as bundle:
+        bundle.write(Path(certifi.where()).read_bytes())
+        bundle.write(b"\n")
+        bundle.write(SUPABASE_ROOT_CA.encode("ascii"))
+    return bundle.name
+
+
 def database_engine(url=None, filename="omnis.db"):
     path = Path(__file__).resolve().parents[1] / filename
     target = make_url(
@@ -202,15 +246,8 @@ def database_engine(url=None, filename="omnis.db"):
                 raise ValueError(
                     "Supabase connections require certificate verification."
                 )
-            import certifi
-
             args["sslmode"] = mode
-            # Supabase database certificates may use its private root CA.
-            # Keep verification enabled and honor an explicitly supplied CA.
-            bundled_ca = Path(__file__).with_name("prod-ca-2021.crt")
-            args["sslrootcert"] = target.query.get("sslrootcert") or (
-                str(bundled_ca) if bundled_ca.is_file() else certifi.where()
-            )
+            args["sslrootcert"] = target.query.get("sslrootcert") or supabase_ca_bundle()
             if target.port == 6543:
                 args["prepare_threshold"] = None
         return create_engine(
