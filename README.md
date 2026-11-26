@@ -11,8 +11,7 @@
   <a href="docs/architecture.md">Architecture</a> ·
   <a href="docs/api.md">API reference</a> ·
   <a href="docs/demo-guide.md">Demo walkthrough</a> ·
-  <a href="docs/verification.md">Verification</a> ·
-  <a href="#contributors">Contributors</a>
+  <a href="docs/verification.md">Verification</a>
 </p>
 
 OMNIS-X is an institutional digital twin and recovery portal for colleges. It connects published timetables, teaching resources and campus disruptions so staff can compare recovery plans and students can see changes that affect their own classes.
@@ -226,9 +225,4 @@ From `frontend`, run `npm.cmd run build` for a production build and `npm.cmd tes
 | A future week is empty | Check whether sessions were published for that date. **Demo week** returns to the seeded schedule. |
 | A browser tab was open during a rebuild | Reload the tab to fetch the current frontend assets. The app also offers a reload action after an asset-load failure. |
 | A recovery plan is stale | Refresh the incident and generate alternatives from the current timetable. |
-
-## Contributors
-
-- [ssinchanagn@gmail.com](mailto:ssinchanagn@gmail.com)
-- [NaveenCB25](https://github.com/NaveenCB25)
 
