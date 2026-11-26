@@ -1,31 +1,172 @@
 # OMNIS-X
 
-OMNIS-X is a campus operations portal for publishing timetables, tracing campus dependencies and recovering teaching sessions after disruptions. Students see their section, batch and registered courses. Faculty see their own assignments and can report absences. Department heads, administrators and operations staff use separate workspaces to review resources, incidents and recovery options.
+OMNIS-X is an institutional digital twin and recovery portal for colleges. It connects published timetables, teaching resources and campus disruptions so staff can compare recovery plans and students can see changes that affect their own classes.
 
-| Guide | What it covers |
+The portal runs locally with SQLite or uses Supabase PostgreSQL through a FastAPI backend. The IIET demo includes section and batch timetables, faculty assignments and sample outages for trying the recovery workflow.
+
+[Architecture](docs/architecture.md) · [API reference](docs/api.md) · [Demo walkthrough](docs/demo-guide.md) · [Verification](docs/verification.md)
+
+## Features
+
+- **Role-based workspaces** for administrators, department heads, faculty, students and operations staff.
+- **Timetables** with Day, Week and List views, individual faculty assignments, and section, batch and course filtering for students.
+- **Digital twin** with a searchable resource list and an interactive dependency graph that share the same filters.
+- **Scenario Lab** for testing room, power, network and faculty disruptions against the campus model.
+- **Recovery Studio** for comparing room changes, substitute instructors and makeup slots, then reviewing and publishing an eligible plan.
+- **Date-scoped resilience** showing the score, its contributing factors and scheduled-session coverage.
+- **Campus administration** for resource and account management, CSV or XLSX imports, events, leave and policy settings.
+- **Publication tracking** through timetable versions, targeted notifications and an audit log.
+
+## Tech stack
+
+| Layer | Tools |
 | --- | --- |
-| [Architecture](docs/architecture.md) | System design, data model, role boundaries, recovery and resilience |
-| [API](docs/api.md) | Routes, request formats, access rules and institutional import |
-| [Demo walkthrough](docs/demo-guide.md) | Student batches, faculty absence, recovery, Digital twin and Supabase table navigation |
-| [Verification](docs/verification.md) | Reproducible checks, observed results and remaining coverage |
+| Frontend | React, TypeScript, Vite, Tailwind CSS and React Router |
+| Data and visuals | TanStack Query, React Flow and Recharts |
+| API and persistence | FastAPI, Pydantic, SQLAlchemy, SQLite and PostgreSQL via Psycopg |
+| Recovery engine | NetworkX for dependency analysis and OR-Tools CP-SAT for constrained scheduling |
+| Testing | Pytest, Vitest, React Testing Library and Playwright |
 
-## Start the portal
+## Requirements
 
-Use Python 3.11 or later with pip. For frontend development or a fresh frontend build, use Node.js 22.12 or later with npm. The launchers bind to localhost, install Python dependencies and build the frontend if `frontend/dist/index.html` is missing. Initial dependency installation requires internet access.
+- Python 3.11 or later with pip.
+- Node.js 22.12 or later with npm to develop or build the frontend.
+- A browser and internet access for the initial dependency install.
+- A Supabase project and PostgreSQL connection details when using the hosted database.
 
-On Windows, run the launcher from the project directory.
+## Quick start
+
+Run the appropriate launcher from the repository root. The launchers install the backend dependencies and build the frontend when `frontend/dist/index.html` is missing.
+
+**Windows**
 
 ```bat
 scripts\start_windows.bat
 ```
 
-On Linux or macOS, run the shell launcher.
+**Linux or macOS**
 
 ```sh
 bash scripts/start_linux.sh
 ```
 
-Open [OMNIS-X](http://127.0.0.1:8000). The built frontend and API are served from the same origin. In development, install the backend dependencies in a virtual environment, start the API, then run Vite in a second terminal.
+Open [OMNIS-X](http://127.0.0.1:8000). Select a demo role on the sign-in page. Under **Student Access**, choose **Batch B1 demo** or **Batch B2 demo**, then open **Timetable → Demo week** to see the lab rotation.
+
+| Batch | Monday at 08:00 | Friday at 08:00 |
+| --- | --- | --- |
+| B1 | Web Technology Lab | Computer Networks Lab |
+| B2 | Computer Networks Lab | Web Technology Lab |
+
+The [demo walkthrough](docs/demo-guide.md) shows how to start with a fresh database, report a faculty absence and publish a recovery.
+
+## Database setup
+
+The backend reads process environment variables first and fills unset values from the ignored root `.env`. The [environment example](.env.example) lists the available settings.
+
+| Setting | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Selects SQLite or PostgreSQL. The default is `backend/omnis-iiet.db` for the IIET demo and `backend/omnis.db` otherwise. |
+| `OMNIS_DEMO` | `1` enables local demo mode. `0` enables non-demo mode with secure session cookies. |
+| `OMNIS_DEMO_DATASET` | `iiet` selects the default timetable fixture. `meridian` selects the fictional campus fixture. |
+| `OMNIS_DEMO_DATE` | Seed date for a new database. The IIET fixture starts on the Monday of that week. |
+| `OMNIS_ADMIN` and `OMNIS_ADMIN_PASSWORD` | Initial administrator credentials for a new non-demo database. The password requires at least 12 characters. |
+
+### Local SQLite
+
+With no `DATABASE_URL`, the app initializes a local SQLite file on startup and reuses it on later runs. To start over without overwriting your current data, set `DATABASE_URL` to a new SQLite file. Run `python scripts/seed_database.py` in the backend environment to initialize the selected database without serving the UI.
+
+### Supabase PostgreSQL
+
+Use the project's **Session pooler** details and the dedicated `omnisx_app` database login. The connection string belongs in the backend environment or root `.env`. URL-encode the password and query values. Use `sslmode=verify-full` and the CA appropriate for the connection. [Supabase connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres).
+
+```dotenv
+DATABASE_URL=postgresql+psycopg://omnisx_app.PROJECT_REF:URL_ENCODED_PASSWORD@SESSION_POOLER_HOST:5432/postgres?sslmode=verify-full&sslrootcert=ABSOLUTE_CA_PATH
+```
+
+For an empty project, generate the operational SQL with `python scripts/supabase_schema.py`, apply it as a PostgreSQL administrator, and provision the dedicated role for password login. To copy an existing SQLite installation, stop its writer, keep a backup, and run `python scripts/migrate_sqlite_to_supabase.py backend/omnis-iiet.db` against the empty target before starting the portal. The copy verifies row counts and leaves users to sign in again.
+
+## Project structure
+
+```text
+.
+├── README.md
+├── .env.example
+├── backend/
+│   ├── app/
+│   │   ├── engine/          Dependency analysis, candidate generation and validation
+│   │   ├── main.py          FastAPI routes and startup
+│   │   ├── database.py      Models and database configuration
+│   │   ├── services.py      Incident, recovery and publication workflows
+│   │   └── iiet.py          IIET timetable fixture
+│   ├── tests/               Backend tests
+│   └── requirements.txt
+├── frontend/
+│   ├── src/                 Role workspaces and UI components
+│   ├── e2e/                 Playwright scenarios
+│   └── vite.config.ts
+├── scripts/                 Startup, seeding, database migration and test server
+└── docs/                    Architecture, API, walkthrough and verification
+```
+
+## Source package guide
+
+| File | Responsibility |
+| --- | --- |
+| [main.tsx](frontend/src/main.tsx) | Sign-in state, protected navigation and workspace refresh |
+| [Twin.tsx](frontend/src/Twin.tsx) and [TwinGraph.tsx](frontend/src/TwinGraph.tsx) | Resource browsing and the dependency graph |
+| [Dashboard.tsx](frontend/src/Dashboard.tsx) and [Recovery.tsx](frontend/src/Recovery.tsx) | Role dashboards, plan comparison and publication controls |
+| [accounts.py](backend/app/accounts.py) and [imports.py](backend/app/imports.py) | Account profiles, enrollment filtering and CSV or XLSX import |
+| [events.py](backend/app/events.py) and [analytics.py](backend/app/analytics.py) | Campus event scope, reservations and resilience calculations |
+| [optimizer.py](backend/app/engine/optimizer.py) and [validation.py](backend/app/engine/validation.py) | Scheduling search, ranking and independent validation |
+
+## Application flow
+
+1. FastAPI opens the configured database and initializes its seed state when needed.
+2. The React workspace signs in through FastAPI. The server scopes sessions, resources and actions to the account's role.
+3. A staff report, faculty absence or event is checked against booked sessions and campus dependencies.
+4. The recovery engine ranks eligible plans. A scenario displays hypothetical results, while an official case follows the configured review policy.
+5. Publication checks the pending plan against the current timetable and policy, applies changes in one transaction, then updates the version, inboxes and audit log.
+6. The workspace polls for refreshed data and shows the published assignments to the affected accounts.
+
+See the [system and recovery diagrams](docs/architecture.md).
+
+## Screens and routes
+
+| Screen | Route | Who uses it |
+| --- | --- | --- |
+| Overview | `/` | All roles, with role-specific metrics |
+| Timetable | `/timetable` | All roles, with personal or campus views according to access |
+| Digital twin | `/twin` | Admin, HOD and Operator |
+| Scenario Lab | `/scenarios` | Admin, HOD and Operator |
+| Recovery Studio | `/recovery` | Admin, HOD and Operator |
+| Incident Center | `/incidents` | Admin, HOD, Faculty and Operator |
+| Substitute requests | `/substitutions` | Faculty |
+| Resources and Analytics | `/resources`, `/analytics` | Admin, HOD and Operator |
+| College events and Notifications | `/events`, `/notifications` | All roles, with account- or department-scoped data |
+| Audit history and Settings | `/audit`, `/settings` | Admin |
+
+The backend serves [interactive API docs](http://127.0.0.1:8000/docs) when running locally. The [API guide](docs/api.md) describes access and request formats.
+
+## Data model
+
+| Records | Purpose |
+| --- | --- |
+| `resources` and `resource_dependencies` | Faculty, rooms, infrastructure, cohorts and the dependencies between them |
+| `academic_sessions` | Dated subject, instructor, room and cohort assignments |
+| `users`, `account_profiles`, `student_enrollments` and `auth_sessions` | Portal identities, access scope and sign-in sessions |
+| `incidents`, `recovery_plans` and `substitution_requests` | Impact analysis, proposed schedules and substitute consent |
+| `college_events` and `leave_requests` | Event scheduling and faculty availability workflows |
+| `institution_state`, `notifications` and `audit_logs` | Timetable version, policy, messages and decision history |
+
+The connected [OMNIS-X Supabase project](https://supabase.com/dashboard/project/wwzockububqslawmsrkv/database/tables?schema=omnisx) also contains the private `student_roster` with 399 students in 12 batches, `timetable_reference_pages` with six section grids and 54 course assignments, and a `student_timetable` view that joins roster batches to published sessions. The source import is separate from portal account creation. The individual PEC and AEC allocations require their separate readable source files.
+
+## Recovery behavior
+
+The optimizer prioritizes the number of covered sessions. It then minimizes the configured costs of delay, room changes and instructor substitutions. Candidate checks include room capacity, equipment, faculty qualifications, workload, bookings, outages and reservations. Protected sessions retain their scheduled date and time. The [architecture guide](docs/architecture.md#recovery-pipeline) explains the search horizon, validation and publication rules.
+
+## Build and test commands
+
+For frontend development, start the backend in one PowerShell terminal.
 
 ```powershell
 python -m venv .venv
@@ -33,69 +174,23 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
+Start Vite from the repository root in a second terminal. It proxies `/api` to the local FastAPI process.
+
 ```powershell
 Set-Location frontend
 npm.cmd ci
 npm.cmd run dev
 ```
 
-Vite prints its local URL and proxies `/api` to port 8000. Run `npm.cmd run build` in `frontend` to type-check and build assets for FastAPI.
+From `frontend`, run `npm.cmd run build` for a production build and `npm.cmd test` for UI unit tests. Backend and full browser-suite commands are in the [verification guide](docs/verification.md).
 
-## Choose a database
+## Troubleshooting
 
-FastAPI reads process environment variables and fills unset values from the ignored root `.env` file. See [environment examples](.env.example) for the variable names.
-
-| Setting | Behavior |
+| Symptom | What to check |
 | --- | --- |
-| `DATABASE_URL` | Selects the SQLite file or PostgreSQL instance. The local default is `backend/omnis-iiet.db` in IIET demo mode, and `backend/omnis.db` otherwise. |
-| `OMNIS_DEMO` | Defaults to `1` and enables local guest access. With `0`, new databases use the environment-provisioned administrator and secure cookies. |
-| `OMNIS_DEMO_DATASET` | `iiet` is the portal default. `meridian` selects the fictional campus fixture. |
-| `OMNIS_DEMO_DATE` | Sets the seed date when initializing a new database. IIET anchors to Monday in the selected week. |
-| `OMNIS_ADMIN` and `OMNIS_ADMIN_PASSWORD` | Required when initializing a fresh non-demo database. The initial password must contain at least 12 characters. |
-
-### Local SQLite
-
-On first launch the IIET fixture supplies CSE Semester V schedules for Sections A–F, B1 and B2 guest students, fictional ECE records, and sample incidents. Data persists across restarts. For a clean demo, point `DATABASE_URL` at a new SQLite file and select a seed date before launch. To initialize a configured database without serving the UI, run `python scripts/seed_database.py` from the backend environment.
-
-### Supabase PostgreSQL
-
-The connected OMNIS-X Supabase project stores operational data in the private `omnisx` schema. Open the schema-specific link to see the tables directly. [OMNIS-X database tables](https://supabase.com/dashboard/project/wwzockububqslawmsrkv/database/tables?schema=omnisx).
-
-- `omnisx.student_roster` contains 399 CSE Semester V student records for 12 batches in Sections A–F.
-- `omnisx.timetable_reference_pages` contains six source timetable grids and 54 course assignments.
-- `omnisx.student_timetable` joins the roster to published section and batch sessions. The individual PEC and AEC updates require readable copies of their separate source PDFs.
-
-For an existing configured project, use its **Session pooler** connection details with the dedicated `omnisx_app` database login. Keep `DATABASE_URL` in the backend environment or root `.env`. Use certificate verification and the [bundled CA file](backend/supabase-root.crt) when appropriate for the project's connection details. URL-encode the password and query parameter values. [Supabase Postgres connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres).
-
-```dotenv
-DATABASE_URL=postgresql+psycopg://omnisx_app.PROJECT_REF:URL_ENCODED_PASSWORD@SESSION_POOLER_HOST:5432/postgres?sslmode=verify-full&sslrootcert=ABSOLUTE_CA_PATH
-```
-
-For a fresh Supabase deployment, generate the application schema with `python scripts/supabase_schema.py` and apply its SQL as a PostgreSQL administrator. Provision the generated dedicated role for password login using the project's secure administration tools. The schema generator covers the operational ORM tables. The imported roster, reference grids and timetable view belong to the connected project's separate data migration.
-
-For a SQLite cutover, stop the source writer, retain a backup and provision an empty target. Configure `DATABASE_URL` and run `python scripts/migrate_sqlite_to_supabase.py backend/omnis-iiet.db` before starting FastAPI against that target. The copy runs in a transaction, checks table counts and omits active authentication sessions. Users sign in again after the cutover.
-
-## Workspaces
-
-| Workspace | Typical work |
-| --- | --- |
-| Administrator | Campus view, accounts and imports, resource directory, policy, recovery approval and audit |
-| Department head | Department timetable, incident review, leave and events, and delegated approval when policy permits |
-| Faculty | Personal teaching timetable, read-only campus bookings, absence reports, leave, room issues and substitute requests |
-| Student | Section- and batch-scoped timetable, registered courses, college events and notifications |
-| Operations | Campus bookings, infrastructure reports, Digital twin, simulations and plan recommendations |
-
-On a local demo sign-in screen, choose a guest role. Under **Student Access**, choose **Batch B1 demo** or **Batch B2 demo**. The portal authenticates the account and checks the selected role when a role-specific sign-in is used. See the [demo guide](docs/demo-guide.md) for a step-by-step run.
-
-## Repository map
-
-| Location | Contents |
-| --- | --- |
-| [frontend/src](frontend/src) | React, TypeScript, routes, role views, React Query polling, React Flow and Recharts |
-| [backend/app](backend/app) | FastAPI, Pydantic, SQLAlchemy, authentication, timetable, imports and publication |
-| [backend/app/engine](backend/app/engine) | NetworkX dependency analysis, constraint checks, OR-Tools CP-SAT search and ranking |
-| [backend/tests](backend/tests) and [frontend/e2e](frontend/e2e) | API, persistence, solver and browser coverage |
-| [scripts](scripts) | Startup, initialization, Supabase schema generation, SQLite migration and browser test server |
-
-The [verification guide](docs/verification.md) contains the backend, frontend, build and browser commands. The packaged demonstration is a loopback deployment. A hosted installation needs HTTPS, environment-specific secret management and its own operational validation.
+| The local page or API does not open | Confirm that FastAPI started on port 8000 and that the frontend was built or Vite is running. |
+| Supabase Tables shows zero tables | Open the schema-specific link above or select `omnisx` in the schema dropdown. |
+| A future week is empty | Check whether sessions were published for that date. **Demo week** returns to the seeded schedule. |
+| A browser tab was open during a rebuild | Reload the tab to fetch the current frontend assets. The app also offers a reload action after an asset-load failure. |
+| A recovery plan is stale | Refresh the incident and generate alternatives from the current timetable. |
 
