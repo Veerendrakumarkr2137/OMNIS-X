@@ -1,6 +1,7 @@
 import axios from "axios";
 // A sleeping Render service can take more than 50 seconds to wake.
-export const api = axios.create({ baseURL: "/api", timeout: 120000 });
+export const isDemoWorkspace = /^\/demo(?:\/|$)/.test(window.location.pathname);
+export const api = axios.create({ baseURL: isDemoWorkspace ? "/demo/api" : "/api", timeout: 120000 });
 
 export function isTransientConnectionError(e: unknown): boolean {
   if (!axios.isAxiosError(e) || axios.isCancel(e)) return false;
